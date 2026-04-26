@@ -3,13 +3,14 @@
 # https://github.com/mellen9999/played
 set -uo pipefail
 
-PLAYED_VERSION="0.1.0"
+PLAYED_VERSION="0.2.0"
 
 # ─── config ──────────────────────────────────────────────────────────────────
 
 XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
 XDG_STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
+XDG_CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}"
 XDG_MUSIC_DIR="${XDG_MUSIC_DIR:-$HOME/Music}"
 
 CONFIG_FILE="${PLAYED_CONFIG:-$XDG_CONFIG_HOME/played/config.sh}"
@@ -19,11 +20,18 @@ MUSIC_DIR="${PLAYED_MUSIC_DIR:-$XDG_MUSIC_DIR}"
 THRESHOLD="${PLAYED_THRESHOLD:-80}"
 MIN_DURATION_SEC="${PLAYED_MIN_DURATION:-30}"
 MAX_DURATION_SEC="${PLAYED_MAX_DURATION:-600}"
-AUDIO_FORMAT="${PLAYED_AUDIO_FORMAT:-opus}"
-AUDIO_QUALITY="${PLAYED_AUDIO_QUALITY:-128K}"
+QUALITY="${PLAYED_QUALITY:-opus}"            # best | opus | opus-compact
+SCORE_THRESHOLD="${PLAYED_SCORE_THRESHOLD:-70}"
+DURATION_TOLERANCE_SEC="${PLAYED_DURATION_TOLERANCE:-5}"
+SEARCH_LIMIT="${PLAYED_SEARCH_LIMIT:-10}"
+MAX_CANDIDATES="${PLAYED_MAX_CANDIDATES:-3}"
+EMBED_COVER="${PLAYED_EMBED_COVER:-1}"
 POLL_INTERVAL="${PLAYED_POLL_INTERVAL:-3}"
 PLAYERS="${PLAYED_PLAYERS:-spotify spotifyd}"
 DRY_RUN="${PLAYED_DRY_RUN:-0}"
+# legacy v0.1 vars (still honored if set in config) — map to QUALITY=opus-compact
+AUDIO_FORMAT="${PLAYED_AUDIO_FORMAT:-opus}"
+AUDIO_QUALITY="${PLAYED_AUDIO_QUALITY:-128K}"
 
 if [[ -f "$CONFIG_FILE" ]]; then
   # shellcheck disable=SC1090
@@ -34,6 +42,28 @@ STATE_DIR="${PLAYED_STATE_DIR:-$XDG_STATE_HOME/played}"
 HISTORY_FILE="$STATE_DIR/history.tsv"
 LOG_FILE="$STATE_DIR/played.log"
 LOCK_FILE="$STATE_DIR/history.lock"
+
+# ─── lib helpers (Python) ────────────────────────────────────────────────────
+
+_resolve_lib_dir() {
+  local self_dir candidate
+  self_dir="$(dirname "$(readlink -f "$0")")"
+  for candidate in \
+      "$self_dir/../lib/played" \
+      "$self_dir/../lib" \
+      "/usr/local/lib/played" \
+      "/usr/lib/played" \
+      "$HOME/.local/lib/played"; do
+    if [[ -f "$candidate/played-match" ]]; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+LIB_DIR="${PLAYED_LIB_DIR:-$(_resolve_lib_dir || echo "")}"
+MATCH_HELPER="$LIB_DIR/played-match"
+COVER_HELPER="$LIB_DIR/played-cover"
 
 # ─── log ─────────────────────────────────────────────────────────────────────
 
@@ -50,14 +80,17 @@ die() { log "fatal: $*" >&2; exit 1; }
 
 _check_deps() {
   local missing=()
-  for cmd in playerctl yt-dlp ffmpeg flock; do
+  for cmd in playerctl yt-dlp ffmpeg ffprobe flock python3; do
     command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
   done
   if (( ${#missing[@]} )); then
     echo "missing dependencies: ${missing[*]}" >&2
-    echo "install on arch:  sudo pacman -S playerctl yt-dlp ffmpeg util-linux" >&2
-    echo "install on debian: sudo apt install playerctl yt-dlp ffmpeg util-linux" >&2
+    echo "install on arch:  sudo pacman -S playerctl yt-dlp ffmpeg util-linux python python-mutagen" >&2
+    echo "install on debian: sudo apt install playerctl yt-dlp ffmpeg util-linux python3 python3-mutagen" >&2
     exit 1
+  fi
+  if [[ -z "$LIB_DIR" || ! -f "$MATCH_HELPER" ]]; then
+    echo "warn: lib helpers not found — scoring disabled, falling back to ytsearch1" >&2
   fi
 }
 
@@ -155,9 +188,11 @@ _history_has() {
 
 _history_append() {
   local uri="$1" artist="$2" title="$3" status="$4"
+  local source="${5:-}" score="${6:-}" bitrate="${7:-}"
   local line
-  line=$(printf '%s\t%s\t%s\t%s\t%s' \
-    "${uri:-unknown}" "$artist" "$title" "$(date -u +%FT%TZ)" "$status")
+  line=$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
+    "${uri:-unknown}" "$artist" "$title" "$(date -u +%FT%TZ)" \
+    "$status" "$source" "$score" "$bitrate")
   (
     flock -x 9
     printf '%s\n' "$line" >> "$HISTORY_FILE"
@@ -173,18 +208,124 @@ _target_path() {
   printf '%s/%s/%s.%s' "$MUSIC_DIR" "$artist_dir" "$clean_title" "$AUDIO_FORMAT"
 }
 
-# ─── download ────────────────────────────────────────────────────────────────
+# ─── download pipeline ───────────────────────────────────────────────────────
+
+# search YouTube and emit one tab-separated row per scored candidate, sorted desc:
+#   <pick|skip>\t<score>\t<id>\t<duration>\t<uploader>\t<title>
+_search_and_score() {
+  local artist="$1" title="$2" length_sec="$3"
+  local query="$artist $title"
+  local json
+  json=$(yt-dlp --dump-json --flat-playlist --no-warnings --quiet \
+    "ytsearch${SEARCH_LIMIT}:$query" 2>/dev/null)
+  [[ -z "$json" ]] && return 1
+
+  if [[ -x "$MATCH_HELPER" ]]; then
+    printf '%s\n' "$json" | "$MATCH_HELPER" \
+      --artist "$artist" --title "$title" \
+      --length-sec "$length_sec" --threshold "$SCORE_THRESHOLD"
+  else
+    # fallback: take ytsearch1, no scoring
+    printf '%s\n' "$json" | head -1 | python3 -c '
+import json,sys
+for ln in sys.stdin:
+    if not ln.strip(): continue
+    d=json.loads(ln)
+    print(f"pick\t50.0\t{d.get(\"id\",\"\")}\t{int(d.get(\"duration\") or 0)}\t{(d.get(\"uploader\") or \"\")[:60]}\t{(d.get(\"title\") or \"\")[:80]}")
+    break
+'
+  fi
+}
+
+_quality_yt_args() {
+  case "$QUALITY" in
+    best)
+      printf '%s\n' "--format" "251/140/bestaudio" "--no-playlist" "--quiet"
+      ;;
+    opus)
+      printf '%s\n' "--format" "251/bestaudio" \
+        "--extract-audio" "--audio-format" "opus" "--audio-quality" "192K" \
+        "--embed-metadata" "--no-playlist" "--quiet"
+      ;;
+    *)  # opus-compact (and v0.1 default)
+      printf '%s\n' "--format" "bestaudio" \
+        "--extract-audio" "--audio-format" "opus" "--audio-quality" "$AUDIO_QUALITY" \
+        "--embed-metadata" "--no-playlist" "--quiet"
+      ;;
+  esac
+}
+
+# returns 0 if downloaded file's duration is within tolerance, else 1
+_verify_duration() {
+  local file="$1" target_sec="$2"
+  local actual
+  actual=$(ffprobe -v error -show_entries format=duration \
+    -of default=nw=1:nk=1 "$file" 2>/dev/null | awk 'NR==1{printf "%.0f",$1}')
+  if [[ -z "$actual" || "$actual" -le 0 ]]; then
+    log "    duration: ffprobe failed; skipping check"
+    return 0
+  fi
+  local diff=$((actual - target_sec))
+  [[ "$diff" -lt 0 ]] && diff=$((-diff))
+  if (( diff > DURATION_TOLERANCE_SEC )); then
+    log "    reject: duration ${actual}s vs ${target_sec}s (Δ${diff}s > ${DURATION_TOLERANCE_SEC}s)"
+    return 1
+  fi
+  return 0
+}
+
+# attempt to download a single YouTube id, verify, and report the path of the
+# saved file via stdout. returns nonzero on any failure (caller deletes nothing
+# extra; this fn cleans up its own partials on failure).
+_try_candidate() {
+  local vid="$1" target_base="$2" length_sec="$3"
+  local out_template="${target_base}.%(ext)s"
+  local url="https://www.youtube.com/watch?v=$vid"
+  local rc=0
+
+  rm -f "${target_base}".*part 2>/dev/null || true
+
+  local args
+  mapfile -t args < <(_quality_yt_args)
+  yt-dlp "${args[@]}" --output "$out_template" "$url" 2>>"$LOG_FILE" || rc=$?
+  if (( rc != 0 )); then
+    rm -f "${target_base}".*part 2>/dev/null || true
+    return 1
+  fi
+
+  # find the produced file (extension may vary when QUALITY=best)
+  local found=""
+  local f
+  for f in "${target_base}".*; do
+    [[ -f "$f" && "$f" != *.part ]] || continue
+    found="$f"; break
+  done
+  if [[ -z "$found" ]]; then
+    return 1
+  fi
+
+  if [[ "$length_sec" -gt 0 ]]; then
+    if ! _verify_duration "$found" "$length_sec"; then
+      rm -f "$found"
+      return 1
+    fi
+  fi
+
+  printf '%s' "$found"
+  return 0
+}
 
 _download() {
-  local artist="$1" title="$2" uri="${3:-}" album="${4:-}" track_num="${5:-}"
-  local clean_title search target target_dir avail_mb
+  local artist="$1" title="$2" uri="${3:-}" album="${4:-}" track_num="${5:-}" length_us="${6:-0}"
+  local clean_title search target target_base target_dir avail_mb length_sec
 
   clean_title=$(_clean_title "$title")
   search="$artist - $clean_title"
   target=$(_target_path "$artist" "$title")
+  target_base="${target%.*}"
   target_dir=$(dirname "$target")
+  length_sec=$((length_us / 1000000))
 
-  # dedupe: history OR file already exists
   if _history_has "$uri" "$artist" "$title"; then
     log "skip (history): $search"; return 0
   fi
@@ -194,7 +335,6 @@ _download() {
     return 0
   fi
 
-  # disk space
   avail_mb=$(df -BM --output=avail "$MUSIC_DIR" 2>/dev/null | tail -1 | tr -dc '0-9')
   if [[ -n "$avail_mb" && "$avail_mb" -lt 200 ]]; then
     log "skip (disk full, ${avail_mb}MB free): $search"
@@ -202,49 +342,97 @@ _download() {
     return 1
   fi
 
+  log "search: $search ${length_sec:+(${length_sec}s)}"
+
+  local candidates
+  candidates=$(_search_and_score "$artist" "$title" "$length_sec")
+  if [[ -z "$candidates" ]]; then
+    log "  no candidates"
+    _history_append "$uri" "$artist" "$title" "no-candidates"
+    return 1
+  fi
+
+  # show top 3 for visibility
+  local shown=0
+  while IFS= read -r row; do
+    [[ -z "$row" ]] && continue
+    log "  $row"
+    ((shown++))
+    [[ "$shown" -ge 3 ]] && break
+  done < <(printf '%s\n' "$candidates")
+
   if (( DRY_RUN )); then
-    log "[dry-run] would download: $search → $target"
+    log "[dry-run] no download performed"
     return 0
   fi
 
-  log "↓ $search"
   mkdir -p "$target_dir"
 
-  # cleanup partials from prior runs
-  rm -f "${target%.*}".*part 2>/dev/null || true
-
-  local out="${target%.*}.%(ext)s"
-  if yt-dlp \
-      --extract-audio \
-      --audio-format "$AUDIO_FORMAT" \
-      --audio-quality "$AUDIO_QUALITY" \
-      --embed-metadata \
-      --no-playlist \
-      --match-filter "duration < $MAX_DURATION_SEC" \
-      --output "$out" \
-      --quiet \
-      "ytsearch1:$search official audio" 2>>"$LOG_FILE"; then
-    if [[ -f "$target" ]]; then
-      _retag "$target" "$artist" "$title" "$album" "$track_num" "$uri"
-      _history_append "$uri" "$artist" "$title" "ok"
-      log "✓ $clean_title"
-    else
-      log "✗ no output file: $search"
-      _history_append "$uri" "$artist" "$title" "nofile"
+  # try top-N pick candidates
+  local tried=0 saved_path="" picked_id="" picked_score=""
+  while IFS=$'\t' read -r flag score vid dur up _tit; do
+    [[ "$flag" != "pick" ]] && break
+    [[ "$tried" -ge "$MAX_CANDIDATES" ]] && break
+    ((tried++))
+    log "  attempt $tried: $vid (score $score, ${dur}s, $up)"
+    if saved_path=$(_try_candidate "$vid" "$target_base" "$length_sec"); then
+      picked_id="$vid"
+      picked_score="$score"
+      break
     fi
-  else
-    rm -f "${target%.*}".*part "${target%.*}.${AUDIO_FORMAT}.part" 2>/dev/null || true
-    log "✗ download failed: $search"
-    _history_append "$uri" "$artist" "$title" "failed"
+    saved_path=""
+  done < <(printf '%s\n' "$candidates")
+
+  if [[ -z "$saved_path" ]]; then
+    log "  rejected: no candidate met the bar (tried $tried)"
+    _history_append "$uri" "$artist" "$title" "rejected"
+    return 1
   fi
+
+  _retag "$saved_path" "$artist" "$title" "$album" "$track_num" "$uri"
+
+  if (( EMBED_COVER )) && [[ -x "$COVER_HELPER" ]]; then
+    _embed_cover "$saved_path" "$album" "$artist" || true
+  fi
+
+  local bitrate
+  bitrate=$(ffprobe -v error -show_entries format=bit_rate \
+    -of default=nw=1:nk=1 "$saved_path" 2>/dev/null | head -1)
+  # fall back to filesize/duration if format-level bitrate missing
+  if [[ -z "$bitrate" || "$bitrate" == "N/A" ]]; then
+    local sz dur
+    sz=$(stat -c %s "$saved_path" 2>/dev/null || echo 0)
+    dur=$(ffprobe -v error -show_entries format=duration \
+      -of default=nw=1:nk=1 "$saved_path" 2>/dev/null)
+    if [[ -n "$dur" && "$sz" -gt 0 ]]; then
+      bitrate=$(awk -v s="$sz" -v d="$dur" 'BEGIN{printf "%d", s*8/d}')
+    fi
+  fi
+
+  _history_append "$uri" "$artist" "$title" "ok" \
+    "youtube:$picked_id" "$picked_score" "$bitrate"
+  log "✓ saved: ${saved_path##*/} (${bitrate:-?} bps)"
+}
+
+_embed_cover() {
+  local file="$1" album="$2" artist="$3"
+  local arturl="" player cache_key
+  if player=$(_get_player); then
+    arturl=$(playerctl -p "$player" metadata mpris:artUrl 2>/dev/null || true)
+  fi
+  cache_key=$(printf '%s_%s' "$album" "$artist" | sha1sum | cut -c1-16)
+  "$COVER_HELPER" "$file" --mpris-url "$arturl" --cache-key "$cache_key" \
+    >>"$LOG_FILE" 2>&1 || return 1
+  log "    cover embedded"
 }
 
 # override yt-dlp's youtube-derived tags with MPRIS canonical metadata.
-# opus tags live at stream level (vorbis comments), not format level.
+# opus tags live at stream level (vorbis comments). strip yt-dlp's verbose
+# synopsis/purl/language tags by clearing first, then writing canonical only.
 _retag() {
   local file="$1" artist="$2" title="$3" album="$4" track_num="$5" uri="$6"
   local tmp="${file%.*}.retag.${file##*.}"
-  local args=(-i "$file" -c copy
+  local args=(-i "$file" -c copy -map_metadata -1 -map_metadata:s:a:0 -1
               -metadata:s:a:0 "artist=$artist"
               -metadata:s:a:0 "title=$(_clean_title "$title")")
   [[ -n "$album" ]] && args+=(-metadata:s:a:0 "album=$album")
@@ -356,7 +544,7 @@ _maybe_download() {
   if (( pct >= THRESHOLD )); then
     log "played ${pct}%: $artist — $title"
     wait  # serialize concurrent downloads
-    _download "$artist" "$title" "$uri" "$album" "$track_num" &
+    _download "$artist" "$title" "$uri" "$album" "$track_num" "$length" &
   else
     log "skipped (${pct}%): $artist — $title"
   fi
@@ -369,14 +557,15 @@ cmd_download() {
   _check_deps
   local player
   player=$(_get_player) || die "no MPRIS player active"
-  local uri artist title album track_num
+  local uri artist title album track_num length
   uri=$(playerctl -p "$player" metadata xesam:url 2>/dev/null || true)
   artist=$(playerctl -p "$player" metadata xesam:artist 2>/dev/null || true)
   title=$(playerctl -p "$player" metadata xesam:title 2>/dev/null || true)
   album=$(playerctl -p "$player" metadata xesam:album 2>/dev/null || true)
   track_num=$(playerctl -p "$player" metadata xesam:trackNumber 2>/dev/null || true)
+  length=$(playerctl -p "$player" metadata mpris:length 2>/dev/null || echo 0)
   [[ -z "$artist$title" ]] && die "no track metadata"
-  _download "$artist" "$title" "$uri" "$album" "$track_num"
+  _download "$artist" "$title" "$uri" "$album" "$track_num" "$length"
 }
 
 # ─── status ──────────────────────────────────────────────────────────────────
@@ -392,10 +581,14 @@ cmd_status() {
   echo "played v$PLAYED_VERSION"
   echo
   echo "config:"
-  echo "  music dir:  $MUSIC_DIR"
-  echo "  threshold:  ${THRESHOLD}%"
-  echo "  format:     $AUDIO_FORMAT @ $AUDIO_QUALITY"
-  echo "  players:    $PLAYERS"
+  echo "  music dir:    $MUSIC_DIR"
+  echo "  listen pct:   ${THRESHOLD}%"
+  echo "  quality:      $QUALITY"
+  echo "  score min:    $SCORE_THRESHOLD"
+  echo "  dur tol:      ±${DURATION_TOLERANCE_SEC}s"
+  echo "  search top-N: $SEARCH_LIMIT"
+  echo "  players:      $PLAYERS"
+  echo "  lib dir:      ${LIB_DIR:-(unset, scoring disabled)}"
   echo
   echo "library:"
   echo "  saved:      $saved"
@@ -462,8 +655,12 @@ MUSIC_DIR="\$HOME/Music"
 THRESHOLD=80
 MIN_DURATION_SEC=30
 MAX_DURATION_SEC=600
-AUDIO_FORMAT=opus
-AUDIO_QUALITY=128K
+QUALITY=opus              # best | opus | opus-compact
+SCORE_THRESHOLD=70        # 0-100; lower = more permissive matching
+DURATION_TOLERANCE_SEC=5  # reject if downloaded duration differs by more
+SEARCH_LIMIT=10           # YouTube candidates to score per track
+MAX_CANDIDATES=3          # max picks to try before giving up
+EMBED_COVER=1             # 1 = embed cover art via mutagen
 POLL_INTERVAL=3
 PLAYERS="spotify spotifyd"
 # DRY_RUN=1
@@ -488,12 +685,17 @@ cmd_config() {
       echo "THRESHOLD=$THRESHOLD"
       echo "MIN_DURATION_SEC=$MIN_DURATION_SEC"
       echo "MAX_DURATION_SEC=$MAX_DURATION_SEC"
-      echo "AUDIO_FORMAT=$AUDIO_FORMAT"
-      echo "AUDIO_QUALITY=$AUDIO_QUALITY"
+      echo "QUALITY=$QUALITY"
+      echo "SCORE_THRESHOLD=$SCORE_THRESHOLD"
+      echo "DURATION_TOLERANCE_SEC=$DURATION_TOLERANCE_SEC"
+      echo "SEARCH_LIMIT=$SEARCH_LIMIT"
+      echo "MAX_CANDIDATES=$MAX_CANDIDATES"
+      echo "EMBED_COVER=$EMBED_COVER"
       echo "POLL_INTERVAL=$POLL_INTERVAL"
       echo "PLAYERS=$PLAYERS"
       echo "DRY_RUN=$DRY_RUN"
       echo "STATE_DIR=$STATE_DIR"
+      echo "LIB_DIR=$LIB_DIR"
       ;;
     edit)
       "${EDITOR:-vi}" "$CONFIG_FILE"

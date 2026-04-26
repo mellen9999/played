@@ -48,15 +48,36 @@ played init
 systemctl --user enable --now played
 ```
 
-deps: `bash` `playerctl` `yt-dlp` `ffmpeg` `flock`.
+deps: `bash` `playerctl` `yt-dlp` `ffmpeg` `flock` `python3` `python3-mutagen`.
 
 ## how it works
 
 1. polls MPRIS metadata via `playerctl` every few seconds
 2. tracks the max position reached for each track
-3. when the track changes, if `max_pos / length ≥ threshold`, downloads from YouTube via `yt-dlp` as opus
-4. retags the result with canonical metadata from MPRIS (artist, title, album, track #) — overrides yt-dlp's youtube-derived tags
+3. when the track changes, if `max_pos / length ≥ threshold`, runs the matching pipeline:
+   - searches **10 candidates** on YouTube
+   - scores each (40% duration match, 25% title, 25% uploader trust, 7% popularity, 3% freshness)
+   - **rejects** if no candidate scores ≥ `SCORE_THRESHOLD` (default 70) — saving nothing is better than saving the wrong version
+   - downloads top pick at the configured **quality level** (no lossy→lossy re-encoding)
+   - **post-verifies** duration is within ±5s of Spotify's `mpris:length`; deletes and tries next candidate if off
+4. retags with canonical MPRIS metadata (artist, title, album, track #), strips YouTube's verbose synopsis, embeds cover art via mutagen
 5. dedupes by Spotify track URI when available, otherwise by lowercased artist+title
+
+## quality levels
+
+| `QUALITY=` | yt-dlp format | result |
+|---|---|---|
+| `best` | `251/140/bestaudio` | **zero re-encode** — webm/m4a native (best audio fidelity) |
+| `opus` *(default)* | `251/bestaudio` → opus 192k | passthrough if YT serves opus, single transcode otherwise |
+| `opus-compact` | `bestaudio` → opus 128k | smaller files, more transcode loss |
+
+YouTube serves opus 160k for popular tracks. `opus-compact` re-encodes 160k → 128k = audible loss. `opus` avoids that.
+
+## scoring + rejection
+
+uploader trust hierarchy: `Topic` (auto-uploads from labels) > `VEVO` > known label keywords > random uploader. Title penalty (×0.5) for `remix/extended/live/mix/demo` words not in the original. Duration scoring is steepest: anything > 60s off = 0.
+
+threshold defaults to 70. lower it (e.g. 60) to be more permissive at the cost of more wrong-version saves. raise it (90) to only accept very clean matches at the cost of more rejections. tune per your taste.
 
 ## config
 
@@ -112,11 +133,13 @@ album-aware layout (`$artist/$album/$track - $title`) is on the roadmap for v0.2
 `~/.local/state/played/history.tsv` — tab-separated:
 
 ```
-spotify_uri	artist	title	timestamp	status
-spotify:track:5h…	Flume	Skin	2026-04-25T14:23:00Z	ok
+spotify_uri	artist	title	timestamp	status	source	score	bitrate
+spotify:track:5h…	Flume	Skin	2026-04-25T14:23:00Z	ok	youtube:abc123	84.2	160000
 ```
 
-`status` is one of: `ok`, `failed`, `nofile`, `exists`, `diskfull`, `migrated`.
+`status` values: `ok`, `rejected` (no candidate met the bar), `no-candidates`, `failed`, `exists`, `diskfull`, `migrated`.
+
+v0.1 5-column rows still parse cleanly — extra columns are appended for new rows.
 
 ## migration from `spotify-dl`
 

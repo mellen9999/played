@@ -1,0 +1,141 @@
+#!/usr/bin/env python3
+"""embed cover art into an opus / m4a / webm audio file.
+
+source priority: Cover Art Archive (MBID) → MPRIS artUrl → fail.
+caches normalized JPEG by --cache-key in $XDG_CACHE_HOME/played/covers.
+
+usage: played-cover FILE [--mpris-url URL] [--mbid MBID] [--cache-key KEY]
+exits: 0 ok, 1 no-cover-found, 2 file-missing, 3 embed-failed
+"""
+
+import argparse
+import base64
+import hashlib
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+UA = "played/0.2.0 (https://github.com/mellen9999/played)"
+CACHE = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))) / "played" / "covers"
+
+
+def _http_get(url: str, timeout: int = 10) -> bytes | None:
+    req = urllib.request.Request(url, headers={"User-Agent": UA})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            if r.status != 200:
+                return None
+            return r.read()
+    except Exception:
+        return None
+
+
+def fetch(url: str, out_path: Path) -> bool:
+    if not url:
+        return False
+    if url.startswith("file://"):
+        src = Path(urllib.parse.unquote(url[7:]))
+        if not src.is_file():
+            return False
+        try:
+            shutil.copyfile(src, out_path)
+            return out_path.stat().st_size > 0
+        except OSError:
+            return False
+    if url.startswith(("http://", "https://")):
+        data = _http_get(url)
+        if not data:
+            return False
+        out_path.write_bytes(data)
+        return True
+    return False
+
+
+def try_caa(mbid: str, out: Path) -> bool:
+    if not mbid:
+        return False
+    return fetch(f"https://coverartarchive.org/release-group/{mbid}/front-1200", out)
+
+
+def normalize_to_jpeg(in_path: Path, out_path: Path, max_dim: int = 1000) -> bool:
+    cmd = [
+        "ffmpeg", "-y", "-loglevel", "error", "-i", str(in_path),
+        "-vf", f"scale='min({max_dim},iw)':'min({max_dim},ih)':force_original_aspect_ratio=decrease",
+        "-q:v", "3", str(out_path),
+    ]
+    return subprocess.run(cmd, capture_output=True).returncode == 0
+
+
+def embed(file_path: Path, image_path: Path) -> bool:
+    try:
+        from mutagen.flac import Picture
+        from mutagen.oggopus import OggOpus
+    except ImportError:
+        sys.stderr.write("played-cover: install python-mutagen for cover-art embedding\n")
+        return False
+    try:
+        f = OggOpus(str(file_path))
+    except Exception:
+        # not an opus file; mutagen has containers for m4a/mp3/flac too,
+        # but v0.2 only embeds for opus output paths
+        return False
+    pic = Picture()
+    pic.type = 3  # cover (front)
+    pic.mime = "image/jpeg"
+    pic.desc = "Cover"
+    pic.data = image_path.read_bytes()
+    pic.width = 0
+    pic.height = 0
+    pic.depth = 0
+    f["metadata_block_picture"] = [base64.b64encode(pic.write()).decode("ascii")]
+    try:
+        f.save()
+    except Exception as e:
+        sys.stderr.write(f"played-cover: save failed: {e}\n")
+        return False
+    return True
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("file")
+    ap.add_argument("--mpris-url", default="")
+    ap.add_argument("--mbid", default="")
+    ap.add_argument("--cache-key", default="")
+    args = ap.parse_args()
+
+    file_path = Path(args.file)
+    if not file_path.exists():
+        return 2
+
+    CACHE.mkdir(parents=True, exist_ok=True)
+
+    key = args.cache_key or args.mbid or hashlib.sha1(
+        (args.mpris_url or str(file_path)).encode()
+    ).hexdigest()[:16]
+    cached = CACHE / f"{key}.jpg"
+
+    if not cached.exists():
+        with tempfile.NamedTemporaryFile(suffix=".bin", delete=False) as tf:
+            tmp = Path(tf.name)
+        try:
+            ok = try_caa(args.mbid, tmp) or fetch(args.mpris_url, tmp)
+            if not ok or tmp.stat().st_size < 1024:
+                return 1
+            if not normalize_to_jpeg(tmp, cached):
+                return 1
+        finally:
+            tmp.unlink(missing_ok=True)
+
+    if not embed(file_path, cached):
+        return 3
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

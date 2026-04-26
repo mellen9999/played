@@ -13,15 +13,33 @@ MIN_DURATION_SEC=30
 # maximum track length to download — kills DJ sets / continuous mixes
 MAX_DURATION_SEC=600
 
-# yt-dlp audio extraction settings
-AUDIO_FORMAT=opus
-AUDIO_QUALITY=128K
+# audio quality preset
+#   best         keep YouTube's native codec (webm/m4a, no transcode = no quality loss)
+#   opus         opus 192k; passthrough if YT serves opus, single transcode otherwise
+#   opus-compact opus 128k always (smaller files, more transcode loss)
+QUALITY=opus
 
-# MPRIS poll interval (seconds). higher = lower CPU, more imprecise pct.
+# minimum match score (0-100) to download. higher = stricter matching.
+# below threshold: track is rejected, not downloaded. tune with `played diag`.
+SCORE_THRESHOLD=70
+
+# downloaded file's duration must be within ±this many seconds of the
+# Spotify track length. catches "extended mix" false matches.
+DURATION_TOLERANCE_SEC=5
+
+# how many YouTube candidates to fetch per search; how many of the top picks
+# to actually try downloading before giving up.
+SEARCH_LIMIT=10
+MAX_CANDIDATES=3
+
+# embed cover art via mutagen (requires python-mutagen)
+EMBED_COVER=1
+
+# MPRIS poll interval (seconds). higher = lower CPU, less precise pct.
 POLL_INTERVAL=3
 
 # space-separated MPRIS player names, in priority order
 PLAYERS="spotify spotifyd"
 
-# uncomment to log decisions without downloading anything
+# uncomment to log decisions (with full candidate scores) without downloading
 # DRY_RUN=1

@@ -1,0 +1,126 @@
+#!/usr/bin/env python3
+"""score yt-dlp search candidates against canonical artist/title/length.
+
+input:   yt-dlp --dump-json output (one json object per line) on stdin
+args:    --artist STR --title STR --length-sec FLOAT --threshold FLOAT
+output:  one row per candidate, sorted by score desc:
+         <pick|skip>\t<score>\t<id>\t<duration_sec>\t<uploader>\t<title>
+"""
+
+import argparse
+import json
+import re
+import sys
+import time
+
+# tokens that imply a different recording — penalize hard if present in the
+# candidate title but absent from the user's track title.
+BAD_TOKENS = {
+    "remix", "remixed", "extended", "live", "demo", "instrumental",
+    "karaoke", "cover", "8d", "nightcore", "sped", "slowed", "reverb",
+    "lyric", "lyrics", "video", "rework", "edit", "bootleg", "mashup",
+    "acoustic", "unplugged",
+}
+
+
+def tokens(s: str) -> set:
+    return set(re.findall(r"\w+", (s or "").lower()))
+
+
+def title_score(want: str, got: str) -> float:
+    a, b = tokens(want), tokens(got)
+    if not a or not b:
+        return 0.0
+    base = 100.0 * len(a & b) / len(a | b)
+    extra_bad = (b - a) & BAD_TOKENS
+    if extra_bad:
+        base *= 0.5 ** len(extra_bad)
+    return base
+
+
+def duration_score(want_sec: float, cand_sec) -> float:
+    if not want_sec or not cand_sec:
+        return 50.0  # neutral when ground truth missing
+    delta = abs(float(cand_sec) - float(want_sec))
+    if delta > 60:
+        return 0.0
+    return 100.0 * (1.0 - delta / 60.0)
+
+
+def trust_score(uploader: str, channel: str) -> float:
+    u = (uploader or "").lower()
+    c = (channel or "").lower()
+    if u.endswith("- topic") or c.endswith("- topic"):
+        return 100.0
+    if "vevo" in u or "vevo" in c:
+        return 85.0
+    for label in ("records", "music", "official", "monstercat", "spinnin",
+                  "ultra", "armada", "anjuna", "mau5trap", "ninjatune"):
+        if label in u or label in c:
+            return 70.0
+    return 40.0
+
+
+def popularity_score(views) -> float:
+    if not views:
+        return 0.0
+    v = float(views)
+    return 100.0 * min(v, 1_000_000.0) / 1_000_000.0
+
+
+def freshness_score(ts) -> float:
+    if not ts:
+        return 50.0
+    age_days = (time.time() - float(ts)) / 86400.0
+    cap = 5 * 365
+    if age_days > cap:
+        return 0.0
+    return 100.0 * (1.0 - age_days / cap)
+
+
+def score(c: dict, artist: str, title: str, length_sec: float) -> float:
+    dur = duration_score(length_sec, c.get("duration"))
+    tit = title_score(f"{artist} {title}", c.get("title") or "")
+    tru = trust_score(c.get("uploader") or "", c.get("channel") or "")
+    pop = popularity_score(c.get("view_count"))
+    fre = freshness_score(c.get("release_timestamp") or c.get("timestamp"))
+    return dur * 0.40 + tit * 0.25 + tru * 0.25 + pop * 0.07 + fre * 0.03
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--artist", required=True)
+    ap.add_argument("--title", required=True)
+    ap.add_argument("--length-sec", type=float, default=0.0)
+    ap.add_argument("--threshold", type=float, default=70.0)
+    args = ap.parse_args()
+
+    rows = []
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            c = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not c.get("id"):
+            continue
+        s = score(c, args.artist, args.title, args.length_sec)
+        rows.append((
+            s,
+            c.get("id"),
+            int(c.get("duration") or 0),
+            (c.get("uploader") or "")[:60],
+            (c.get("title") or "")[:80],
+        ))
+
+    rows.sort(reverse=True)
+    for s, vid, dur, up, tit in rows:
+        flag = "pick" if s >= args.threshold else "skip"
+        print(f"{flag}\t{s:.1f}\t{vid}\t{dur}\t{up}\t{tit}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

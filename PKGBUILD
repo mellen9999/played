@@ -7,11 +7,12 @@ pkgdesc="auto-archive music you actually listen to (>=80% played, MPRIS-driven)"
 arch=('any')
 url="https://github.com/mellen9999/played"
 license=('MIT')
-depends=('bash' 'playerctl' 'yt-dlp' 'ffmpeg' 'util-linux')
+depends=('bash' 'playerctl' 'yt-dlp' 'ffmpeg' 'util-linux' 'python' 'python-mutagen')
 makedepends=('git')
 optdepends=(
-  'libnotify: desktop notifications on save (planned, v0.2)'
-  'rsgain: ReplayGain R128 normalization (planned, v0.2)'
+  'libnotify: desktop notifications on save (planned, v0.3)'
+  'rsgain: ReplayGain R128 normalization (planned, v0.3)'
+  'chromaprint: AcoustID fingerprint verification (planned, v0.3)'
 )
 provides=("$_pkgname")
 conflicts=("$_pkgname")
