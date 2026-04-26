@@ -210,7 +210,7 @@ History: `~/.local/state/played/history.tsv` — tab-separated, append-only:
 spotify_uri	artist	title	timestamp	status	source	score	bitrate
 ```
 
-`status` is one of: `ok`, `rejected` (no candidate met the bar), `no-candidates`, `failed`, `exists`, `diskfull`, `migrated`.
+`status` is one of: `ok`, `rejected` (no candidate met the bar), `no-candidates`, `failed`, `exists`, `diskfull`.
 
 Logs: `~/.local/state/played/played.log`.
 
@@ -241,10 +241,6 @@ Skipped automatically:
 ## why YouTube and not Spotify directly?
 
 Spotify's audio is DRM-encrypted; capturing the stream requires bypassing DRM, which is illegal in most jurisdictions and against the terms of service. YouTube hosts the same recordings — often uploaded by the labels themselves on `- Topic` channels — at comparable bitrate. `played` matches Spotify's metadata against YouTube's catalog and grabs the closest version. No DRM bypass, no audio-stream capture.
-
-## migrating from spotify-dl
-
-If you used the precursor `spotify-dl` script, `played` auto-migrates `~/sync/music/.downloaded` into the new TSV format on first run. Existing files on disk are recognized regardless — you won't get duplicate downloads.
 
 ## legal
 

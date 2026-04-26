@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# regression: case-insensitive existence check so legacy mixed-case files
-# (Breakaway.opus from spotify-dl) are detected by played's lowercase target
-# (breakaway.opus). Without this, the same song re-downloads forever.
+# regression: case-insensitive existence check so any pre-existing mixed-case
+# file (Breakaway.opus) is detected by played's lowercase target (breakaway.opus).
+# Without this, the same song re-downloads forever.
 set -euo pipefail
 
 TMP=$(mktemp -d)

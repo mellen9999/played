@@ -153,25 +153,6 @@ _clean_title() {
 _init_state() {
   mkdir -p "$STATE_DIR" "$MUSIC_DIR"
   touch "$HISTORY_FILE" "$LOG_FILE"
-  _migrate_legacy_history
-}
-
-# migrate ~/sync/music/.downloaded (artist - title per line) → TSV history.
-# only runs if new history is empty and legacy exists.
-_migrate_legacy_history() {
-  local legacy="$HOME/sync/music/.downloaded"
-  [[ -s "$HISTORY_FILE" ]] && return 0
-  [[ ! -f "$legacy" ]] && return 0
-  log "migrating legacy history → $HISTORY_FILE"
-  local count=0
-  while IFS= read -r line; do
-    [[ -z "$line" ]] && continue
-    local artist="${line%% - *}" title="${line#* - }"
-    printf 'unknown\t%s\t%s\t%s\tmigrated\n' \
-      "$artist" "$title" "$(date -u +%FT%TZ)" >> "$HISTORY_FILE"
-    ((count++)) || true
-  done < "$legacy"
-  log "migrated $count entries"
 }
 
 # ─── history / dedupe ────────────────────────────────────────────────────────
@@ -340,9 +321,8 @@ _download() {
   if _history_has "$uri" "$artist" "$title"; then
     log "skip (history): $search"; return 0
   fi
-  # case-insensitive: legacy spotify-dl saved with original-case titles
-  # (e.g. Breakaway.opus) while played generates lowercase paths. Without
-  # this, the same song re-downloads every time a stale-cased copy exists.
+  # case-insensitive existence check — played writes lowercase paths, but
+  # any pre-existing mixed-case copy on disk should be treated as the same file.
   local existing_file
   existing_file=$(find "$target_dir" -maxdepth 1 -type f -iname "$(basename "$target")" -print -quit 2>/dev/null)
   if [[ -n "$existing_file" ]]; then
