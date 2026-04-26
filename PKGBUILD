@@ -1,7 +1,7 @@
 # Maintainer: heatsync <mellen@heatsync.org>
 pkgname=played-git
 _pkgname=played
-pkgver=0.2.1.r0.gHEAD
+pkgver=0.2.2.r0.gHEAD
 pkgrel=1
 pkgdesc="auto-archive music you actually listen to (>=80% played, MPRIS-driven)"
 arch=('any')

@@ -3,7 +3,7 @@
 # https://github.com/mellen9999/played
 set -uo pipefail
 
-PLAYED_VERSION="0.2.1"
+PLAYED_VERSION="0.2.2"
 
 # ─── config ──────────────────────────────────────────────────────────────────
 
