@@ -3,16 +3,19 @@ Description=played — auto-archive music you actually listen to
 Documentation=https://github.com/mellen9999/played
 After=dbus.socket
 Wants=dbus.socket
+StartLimitIntervalSec=300
+StartLimitBurst=20
 
 [Service]
 Type=simple
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
+# include ~/.local/bin so `env played` works for user-installs without
+# depending on the user's interactive PATH being inherited.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin
 # resolve via PATH so the unit works for both system-wide and ~/.local installs
 ExecStart=/usr/bin/env played watch
 Restart=always
 RestartSec=5
-StartLimitIntervalSec=300
-StartLimitBurst=20
 
 # resource limits — tuned for low-RAM systems (e.g. 8GB SBCs)
 MemoryHigh=2G
@@ -27,7 +30,10 @@ ProtectHome=read-only
 # at ~/.config/systemd/user/played.service.d/music-dir.conf with:
 #   [Service]
 #   ReadWritePaths=/your/custom/path
-ReadWritePaths=%h/.local/share/played %h/.local/state/played %h/.cache/played %h/Music
+# `-` prefix: don't fail namespace setup if a path is absent (e.g. on first
+# launch before played has created its state/cache dirs, or when MUSIC_DIR
+# differs from the default and is granted via a drop-in instead).
+ReadWritePaths=-%h/.local/state/played -%h/.cache/played -%h/Music
 PrivateTmp=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
