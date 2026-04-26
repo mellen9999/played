@@ -340,8 +340,13 @@ _download() {
   if _history_has "$uri" "$artist" "$title"; then
     log "skip (history): $search"; return 0
   fi
-  if [[ -f "$target" ]]; then
-    log "skip (file exists): $search"
+  # case-insensitive: legacy spotify-dl saved with original-case titles
+  # (e.g. Breakaway.opus) while played generates lowercase paths. Without
+  # this, the same song re-downloads every time a stale-cased copy exists.
+  local existing_file
+  existing_file=$(find "$target_dir" -maxdepth 1 -type f -iname "$(basename "$target")" -print -quit 2>/dev/null)
+  if [[ -n "$existing_file" ]]; then
+    log "skip (file exists): $existing_file"
     _history_append "$uri" "$artist" "$title" "exists"
     return 0
   fi
