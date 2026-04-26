@@ -8,13 +8,16 @@ auto-archive music you actually listen to.
 
 ```
 $ played status
-played v0.1.0
+played v0.2.1
 
 config:
-  music dir:  /home/u/Music
-  threshold:  80%
-  format:     opus @ 128K
-  players:    spotify spotifyd
+  music dir:    /home/u/Music
+  listen pct:   80%
+  quality:      opus
+  score min:    70
+  dur tol:      ±5s
+  search top-N: 10
+  players:      spotify spotifyd
 
 library:
   saved:      347
@@ -31,7 +34,7 @@ Spotify Wrapped tells you what you played. `played` *keeps* it. Build a personal
 
 ## install
 
-### arch (AUR)
+### arch (AUR) *(planned, not yet published)*
 
 ```sh
 paru -S played-git

@@ -20,7 +20,8 @@ MAX_DURATION_SEC=600
 QUALITY=opus
 
 # minimum match score (0-100) to download. higher = stricter matching.
-# below threshold: track is rejected, not downloaded. tune with `played diag`.
+# below threshold: track is rejected and logged. set DRY_RUN=1 to inspect
+# scores without downloading.
 SCORE_THRESHOLD=70
 
 # downloaded file's duration must be within ±this many seconds of the

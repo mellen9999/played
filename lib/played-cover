@@ -19,12 +19,13 @@ import tempfile
 import urllib.parse
 import urllib.request
 from pathlib import Path
+from typing import Optional
 
 UA = "played/0.2.0 (https://github.com/mellen9999/played)"
 CACHE = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))) / "played" / "covers"
 
 
-def _http_get(url: str, timeout: int = 10) -> bytes | None:
+def _http_get(url: str, timeout: int = 10) -> Optional[bytes]:
     req = urllib.request.Request(url, headers={"User-Agent": UA})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -35,15 +36,30 @@ def _http_get(url: str, timeout: int = 10) -> bytes | None:
         return None
 
 
+def _is_safe_local_path(p: Path) -> bool:
+    """restrict file:// reads to user home + common cache locations to prevent
+    a malicious MPRIS player from coaxing us into reading /etc/shadow etc."""
+    try:
+        resolved = p.resolve()
+    except (OSError, RuntimeError):
+        return False
+    home = Path.home().resolve()
+    runtime = Path(os.environ.get("XDG_RUNTIME_DIR", "/run/user/0")).resolve()
+    return resolved.is_relative_to(home) or resolved.is_relative_to(runtime)
+
+
 def fetch(url: str, out_path: Path) -> bool:
     if not url:
         return False
     if url.startswith("file://"):
         src = Path(urllib.parse.unquote(url[7:]))
-        if not src.is_file():
+        if not src.is_file() or not _is_safe_local_path(src):
             return False
         try:
-            shutil.copyfile(src, out_path)
+            # cap at 16MB to defend against /dev/zero or huge files
+            with src.open("rb") as f:
+                data = f.read(16 * 1024 * 1024)
+            out_path.write_bytes(data)
             return out_path.stat().st_size > 0
         except OSError:
             return False
@@ -52,6 +68,25 @@ def fetch(url: str, out_path: Path) -> bool:
         if not data:
             return False
         out_path.write_bytes(data)
+        return True
+    return False
+
+
+def _is_valid_image(p: Path) -> bool:
+    """basic magic-byte check on cached file before reuse."""
+    try:
+        if p.stat().st_size < 1024:
+            return False
+        with p.open("rb") as f:
+            head = f.read(12)
+    except OSError:
+        return False
+    # JPEG: FF D8 FF; PNG: 89 50 4E 47; WebP: RIFF????WEBP
+    if head[:3] == b"\xff\xd8\xff":
+        return True
+    if head[:4] == b"\x89PNG":
+        return True
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
         return True
     return False
 
@@ -120,6 +155,11 @@ def main() -> int:
     ).hexdigest()[:16]
     cached = CACHE / f"{key}.jpg"
 
+    # if cache exists but is corrupt (failed normalize from a prior run),
+    # delete it so we re-fetch instead of embedding garbage.
+    if cached.exists() and not _is_valid_image(cached):
+        cached.unlink(missing_ok=True)
+
     if not cached.exists():
         with tempfile.NamedTemporaryFile(suffix=".bin", delete=False) as tf:
             tmp = Path(tf.name)
@@ -128,6 +168,10 @@ def main() -> int:
             if not ok or tmp.stat().st_size < 1024:
                 return 1
             if not normalize_to_jpeg(tmp, cached):
+                cached.unlink(missing_ok=True)
+                return 1
+            if not _is_valid_image(cached):
+                cached.unlink(missing_ok=True)
                 return 1
         finally:
             tmp.unlink(missing_ok=True)

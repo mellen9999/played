@@ -1,12 +1,14 @@
 [Unit]
 Description=played — auto-archive music you actually listen to
+Documentation=https://github.com/mellen9999/played
 After=dbus.socket
 Wants=dbus.socket
 
 [Service]
 Type=simple
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
-ExecStart=%h/.local/bin/played watch
+# resolve via PATH so the unit works for both system-wide and ~/.local installs
+ExecStart=/usr/bin/env played watch
 Restart=always
 RestartSec=5
 StartLimitIntervalSec=300
@@ -21,7 +23,11 @@ CPUQuota=50%
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=%h/.local/share/played %h/.local/state/played %h/Music
+# %h/Music must be writable; if MUSIC_DIR points elsewhere, add a drop-in
+# at ~/.config/systemd/user/played.service.d/music-dir.conf with:
+#   [Service]
+#   ReadWritePaths=/your/custom/path
+ReadWritePaths=%h/.local/share/played %h/.local/state/played %h/.cache/played %h/Music
 PrivateTmp=true
 ProtectKernelTunables=true
 ProtectKernelModules=true

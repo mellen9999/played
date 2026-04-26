@@ -41,7 +41,10 @@ def title_score(want: str, got: str) -> float:
 def duration_score(want_sec: float, cand_sec) -> float:
     if not want_sec or not cand_sec:
         return 50.0  # neutral when ground truth missing
-    delta = abs(float(cand_sec) - float(want_sec))
+    try:
+        delta = abs(float(cand_sec) - float(want_sec))
+    except (TypeError, ValueError):
+        return 50.0
     if delta > 60:
         return 0.0
     return 100.0 * (1.0 - delta / 60.0)
@@ -64,14 +67,20 @@ def trust_score(uploader: str, channel: str) -> float:
 def popularity_score(views) -> float:
     if not views:
         return 0.0
-    v = float(views)
+    try:
+        v = float(views)
+    except (TypeError, ValueError):
+        return 0.0
     return 100.0 * min(v, 1_000_000.0) / 1_000_000.0
 
 
 def freshness_score(ts) -> float:
     if not ts:
         return 50.0
-    age_days = (time.time() - float(ts)) / 86400.0
+    try:
+        age_days = (time.time() - float(ts)) / 86400.0
+    except (TypeError, ValueError):
+        return 50.0
     cap = 5 * 365
     if age_days > cap:
         return 0.0
