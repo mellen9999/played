@@ -1,0 +1,541 @@
+#!/usr/bin/env bash
+# played — auto-archive music you actually listen to (>=80% played)
+# https://github.com/heatsync/played
+set -uo pipefail
+
+PLAYED_VERSION="0.1.0"
+
+# ─── config ──────────────────────────────────────────────────────────────────
+
+XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+XDG_STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
+XDG_MUSIC_DIR="${XDG_MUSIC_DIR:-$HOME/Music}"
+
+CONFIG_FILE="${PLAYED_CONFIG:-$XDG_CONFIG_HOME/played/config.sh}"
+
+# defaults — overridable in config
+MUSIC_DIR="${PLAYED_MUSIC_DIR:-$XDG_MUSIC_DIR}"
+THRESHOLD="${PLAYED_THRESHOLD:-80}"
+MIN_DURATION_SEC="${PLAYED_MIN_DURATION:-30}"
+MAX_DURATION_SEC="${PLAYED_MAX_DURATION:-600}"
+AUDIO_FORMAT="${PLAYED_AUDIO_FORMAT:-opus}"
+AUDIO_QUALITY="${PLAYED_AUDIO_QUALITY:-128K}"
+POLL_INTERVAL="${PLAYED_POLL_INTERVAL:-3}"
+PLAYERS="${PLAYED_PLAYERS:-spotify spotifyd}"
+DRY_RUN="${PLAYED_DRY_RUN:-0}"
+
+if [[ -f "$CONFIG_FILE" ]]; then
+  # shellcheck disable=SC1090
+  source "$CONFIG_FILE"
+fi
+
+STATE_DIR="${PLAYED_STATE_DIR:-$XDG_STATE_HOME/played}"
+HISTORY_FILE="$STATE_DIR/history.tsv"
+LOG_FILE="$STATE_DIR/played.log"
+LOCK_FILE="$STATE_DIR/history.lock"
+
+# ─── log ─────────────────────────────────────────────────────────────────────
+
+_color() { [[ -t 1 ]] && printf '\033[%sm%s\033[0m' "$1" "$2" || printf '%s' "$2"; }
+log() {
+  local ts msg="$*"
+  ts="$(date '+%H:%M:%S')"
+  printf '[%s] %s\n' "$ts" "$msg" | tee -a "$LOG_FILE" >/dev/null
+  [[ -t 1 ]] && printf '[%s] %s\n' "$(_color 90 "$ts")" "$msg"
+}
+die() { log "fatal: $*" >&2; exit 1; }
+
+# ─── deps ────────────────────────────────────────────────────────────────────
+
+_check_deps() {
+  local missing=()
+  for cmd in playerctl yt-dlp ffmpeg flock; do
+    command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
+  done
+  if (( ${#missing[@]} )); then
+    echo "missing dependencies: ${missing[*]}" >&2
+    echo "install on arch:  sudo pacman -S playerctl yt-dlp ffmpeg util-linux" >&2
+    echo "install on debian: sudo apt install playerctl yt-dlp ffmpeg util-linux" >&2
+    exit 1
+  fi
+}
+
+# ─── sanitization ────────────────────────────────────────────────────────────
+
+# strip filesystem-hostile and traversal-hostile chars; produce a safe path
+# component. Never empty (falls back to "_").
+_safe_component() {
+  local s="$1"
+  s="${s//$'\n'/ }"
+  s="${s//$'\t'/ }"
+  s="${s//$'\r'/ }"
+  s=$(printf '%s' "$s" | tr -d '\000-\037\177' | tr -d '/\\:*?"<>|')
+  s="${s//../}"
+  s="${s##.}"
+  s="${s##-}"
+  s="${s##*([[:space:]])}"
+  s="${s%%*([[:space:]])}"
+  shopt -s extglob 2>/dev/null
+  s="${s//+([[:space:]])/ }"
+  s="${s// /_}"
+  s="${s,,}"
+  s="${s:0:120}"
+  [[ -z "$s" ]] && s="_"
+  case "$s" in con|aux|prn|nul|com[1-9]|lpt[1-9]) s="_${s}" ;; esac
+  printf '%s' "$s"
+}
+
+# title cleanup for filenames + search (drops noise, keeps the song name)
+_clean_title() {
+  local t="$1"
+  t="${t//$'\n'/ }"
+  t="${t//$'\t'/ }"
+  t=$(printf '%s' "$t" | sed -E '
+    s/\s*\(Official[^)]*\)//gi
+    s/\s*\(Audio\)//gi
+    s/\s*\(Lyrics?\)//gi
+    s/\s*\(Lyric (Video|Visuali[sz]er)\)//gi
+    s/\s*\(HQ\)//gi
+    s/\s*\(NCM Release\)//gi
+    s/\s*\[HD\]//gi
+    s/\s*\[OUT NOW\]//gi
+    s/\s*\[PREMIERE\]//gi
+    s/\s*\[Silk Music\]//gi
+    s/\s*\[Colorize\]//gi
+    s/\s*\[Odd One Out\]//gi
+    s/\s*\[Songspire Records\]//gi
+    s/\s*\[Progressive House\]//gi
+    s/\s*\[Melodic House [^]]*\]//gi
+    s/\s*\[20[0-9]{2}\]//gi
+    s/\s*#[a-zA-Z]+//g
+    s/^\s*-\s*//
+    s/\s*$//')
+  printf '%s' "$t"
+}
+
+# ─── state init ──────────────────────────────────────────────────────────────
+
+_init_state() {
+  mkdir -p "$STATE_DIR" "$MUSIC_DIR"
+  touch "$HISTORY_FILE" "$LOG_FILE"
+  _migrate_legacy_history
+}
+
+# migrate ~/sync/music/.downloaded (artist - title per line) → TSV history.
+# only runs if new history is empty and legacy exists.
+_migrate_legacy_history() {
+  local legacy="$HOME/sync/music/.downloaded"
+  [[ -s "$HISTORY_FILE" ]] && return 0
+  [[ ! -f "$legacy" ]] && return 0
+  log "migrating legacy history → $HISTORY_FILE"
+  local count=0
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    local artist="${line%% - *}" title="${line#* - }"
+    printf 'unknown\t%s\t%s\t%s\tmigrated\n' \
+      "$artist" "$title" "$(date -u +%FT%TZ)" >> "$HISTORY_FILE"
+    ((count++)) || true
+  done < "$legacy"
+  log "migrated $count entries"
+}
+
+# ─── history / dedupe ────────────────────────────────────────────────────────
+
+_history_has() {
+  local uri="$1" artist="$2" title="$3"
+  if [[ -n "$uri" && "$uri" != "unknown" ]]; then
+    awk -F'\t' -v u="$uri" '$1==u {found=1; exit} END{exit !found}' "$HISTORY_FILE"
+    return $?
+  fi
+  awk -F'\t' -v a="$artist" -v t="$title" \
+    'tolower($2)==tolower(a) && tolower($3)==tolower(t) {found=1; exit} END{exit !found}' \
+    "$HISTORY_FILE"
+}
+
+_history_append() {
+  local uri="$1" artist="$2" title="$3" status="$4"
+  local line
+  line=$(printf '%s\t%s\t%s\t%s\t%s' \
+    "${uri:-unknown}" "$artist" "$title" "$(date -u +%FT%TZ)" "$status")
+  flock "$LOCK_FILE" -c "printf '%s\n' \"\$0\" >> \"\$1\"" "$line" "$HISTORY_FILE"
+}
+
+# target opus path for a given artist/title (used for file-existence dedupe)
+_target_path() {
+  local artist="$1" title="$2"
+  local artist_dir clean_title
+  artist_dir=$(_safe_component "$artist")
+  clean_title=$(_safe_component "$(_clean_title "$title")")
+  printf '%s/%s/%s.%s' "$MUSIC_DIR" "$artist_dir" "$clean_title" "$AUDIO_FORMAT"
+}
+
+# ─── download ────────────────────────────────────────────────────────────────
+
+_download() {
+  local artist="$1" title="$2" uri="${3:-}" album="${4:-}" track_num="${5:-}"
+  local clean_title search target target_dir avail_mb
+
+  clean_title=$(_clean_title "$title")
+  search="$artist - $clean_title"
+  target=$(_target_path "$artist" "$title")
+  target_dir=$(dirname "$target")
+
+  # dedupe: history OR file already exists
+  if _history_has "$uri" "$artist" "$title"; then
+    log "skip (history): $search"; return 0
+  fi
+  if [[ -f "$target" ]]; then
+    log "skip (file exists): $search"
+    _history_append "$uri" "$artist" "$title" "exists"
+    return 0
+  fi
+
+  # disk space
+  avail_mb=$(df -BM --output=avail "$MUSIC_DIR" 2>/dev/null | tail -1 | tr -dc '0-9')
+  if [[ -n "$avail_mb" && "$avail_mb" -lt 200 ]]; then
+    log "skip (disk full, ${avail_mb}MB free): $search"
+    _history_append "$uri" "$artist" "$title" "diskfull"
+    return 1
+  fi
+
+  if (( DRY_RUN )); then
+    log "[dry-run] would download: $search → $target"
+    return 0
+  fi
+
+  log "↓ $search"
+  mkdir -p "$target_dir"
+
+  # cleanup partials from prior runs
+  rm -f "${target%.*}".*part 2>/dev/null || true
+
+  local out="${target%.*}.%(ext)s"
+  if yt-dlp \
+      --extract-audio \
+      --audio-format "$AUDIO_FORMAT" \
+      --audio-quality "$AUDIO_QUALITY" \
+      --embed-metadata \
+      --no-playlist \
+      --match-filter "duration < $MAX_DURATION_SEC" \
+      --output "$out" \
+      --quiet \
+      "ytsearch1:$search official audio" 2>>"$LOG_FILE"; then
+    if [[ -f "$target" ]]; then
+      _retag "$target" "$artist" "$title" "$album" "$track_num" "$uri"
+      _history_append "$uri" "$artist" "$title" "ok"
+      log "✓ $clean_title"
+    else
+      log "✗ no output file: $search"
+      _history_append "$uri" "$artist" "$title" "nofile"
+    fi
+  else
+    rm -f "${target%.*}".*part "${target%.*}.${AUDIO_FORMAT}.part" 2>/dev/null || true
+    log "✗ download failed: $search"
+    _history_append "$uri" "$artist" "$title" "failed"
+  fi
+}
+
+# override yt-dlp's youtube-derived tags with MPRIS canonical metadata
+_retag() {
+  local file="$1" artist="$2" title="$3" album="$4" track_num="$5" uri="$6"
+  local tmp="${file%.*}.retag.${file##*.}"
+  local args=(-i "$file" -c copy -map_metadata -1
+              -metadata "artist=$artist"
+              -metadata "title=$(_clean_title "$title")")
+  [[ -n "$album" ]] && args+=(-metadata "album=$album")
+  [[ -n "$track_num" ]] && args+=(-metadata "track=$track_num")
+  [[ -n "$uri" && "$uri" != "unknown" ]] && args+=(-metadata "comment=$uri")
+  if ffmpeg -y "${args[@]}" "$tmp" >/dev/null 2>&1; then
+    mv "$tmp" "$file"
+  else
+    rm -f "$tmp" 2>/dev/null || true
+  fi
+}
+
+# ─── player / track filtering ────────────────────────────────────────────────
+
+_get_player() {
+  local p
+  for p in $PLAYERS; do
+    playerctl -p "$p" status >/dev/null 2>&1 && { printf '%s' "$p"; return 0; }
+  done
+  return 1
+}
+
+# returns 0 if track should be considered, 1 to skip
+_track_eligible() {
+  local uri="$1" artist="$2" title="$3" length_us="$4"
+  # ad
+  [[ "$artist" == "Spotify" && "$title" == "Advertisement" ]] && return 1
+  [[ -z "$artist" || -z "$title" ]] && return 1
+  # podcast
+  [[ "$uri" == spotify:episode:* ]] && return 1
+  # too short (raw ms threshold avoids 80% of 20s == 16s gotcha)
+  local min_us=$((MIN_DURATION_SEC * 1000000))
+  [[ "$length_us" -gt 0 && "$length_us" -lt "$min_us" ]] && return 1
+  return 0
+}
+
+# ─── watch loop ──────────────────────────────────────────────────────────────
+
+watch_loop() {
+  _init_state
+  log "watching MPRIS (≥${THRESHOLD}% played → save as $AUDIO_FORMAT)"
+
+  local current_uri="" current_artist="" current_title=""
+  local current_length=0 current_album="" current_track_num=""
+  local max_pos=0
+
+  while true; do
+    local player
+    if ! player=$(_get_player); then
+      # player gone → flush last track
+      if [[ -n "$current_uri" && "$current_length" -gt 0 ]]; then
+        _maybe_download "$current_uri" "$current_artist" "$current_title" \
+                        "$max_pos" "$current_length" "$current_album" "$current_track_num"
+        current_uri=""
+        max_pos=0
+      fi
+      sleep "$POLL_INTERVAL"
+      continue
+    fi
+
+    local uri artist title length album track_num status pos
+    uri=$(playerctl -p "$player" metadata xesam:url 2>/dev/null || true)
+    artist=$(playerctl -p "$player" metadata xesam:artist 2>/dev/null || true)
+    title=$(playerctl -p "$player" metadata xesam:title 2>/dev/null || true)
+    length=$(playerctl -p "$player" metadata mpris:length 2>/dev/null || echo 0)
+    album=$(playerctl -p "$player" metadata xesam:album 2>/dev/null || true)
+    track_num=$(playerctl -p "$player" metadata xesam:trackNumber 2>/dev/null || true)
+
+    # use uri as identity if available, else artist+title
+    local identity="${uri:-$artist - $title}"
+
+    if [[ "$identity" != "$current_uri" ]]; then
+      # track changed → evaluate previous
+      if [[ -n "$current_uri" && "$current_length" -gt 0 ]]; then
+        _maybe_download "$current_uri" "$current_artist" "$current_title" \
+                        "$max_pos" "$current_length" "$current_album" "$current_track_num"
+      fi
+      current_uri="$identity"
+      current_artist="$artist"
+      current_title="$title"
+      current_length="$length"
+      current_album="$album"
+      current_track_num="$track_num"
+      max_pos=0
+      if _track_eligible "$uri" "$artist" "$title" "$length"; then
+        log "▶ $artist — $title"
+      else
+        log "▶ (filtered) $artist — $title"
+        current_length=0  # disables eval
+      fi
+    fi
+
+    status=$(playerctl -p "$player" status 2>/dev/null || true)
+    if [[ "$status" == "Playing" && "$current_length" -gt 0 ]]; then
+      pos=$(playerctl -p "$player" position 2>/dev/null || echo 0)
+      pos=$(awk -v p="$pos" 'BEGIN{printf "%.0f", p*1000000}')
+      [[ "$pos" -gt "$max_pos" ]] && max_pos="$pos"
+    fi
+
+    sleep "$POLL_INTERVAL"
+  done
+}
+
+_maybe_download() {
+  local uri="$1" artist="$2" title="$3" max_pos="$4" length="$5"
+  local album="$6" track_num="$7"
+  [[ "$length" -le 0 ]] && return
+  local pct=$((max_pos * 100 / length))
+  if (( pct >= THRESHOLD )); then
+    log "played ${pct}%: $artist — $title"
+    wait  # serialize concurrent downloads
+    _download "$artist" "$title" "$uri" "$album" "$track_num" &
+  else
+    log "skipped (${pct}%): $artist — $title"
+  fi
+}
+
+# ─── one-shot download (current track) ───────────────────────────────────────
+
+cmd_download() {
+  _init_state
+  _check_deps
+  local player
+  player=$(_get_player) || die "no MPRIS player active"
+  local uri artist title album track_num
+  uri=$(playerctl -p "$player" metadata xesam:url 2>/dev/null || true)
+  artist=$(playerctl -p "$player" metadata xesam:artist 2>/dev/null || true)
+  title=$(playerctl -p "$player" metadata xesam:title 2>/dev/null || true)
+  album=$(playerctl -p "$player" metadata xesam:album 2>/dev/null || true)
+  track_num=$(playerctl -p "$player" metadata xesam:trackNumber 2>/dev/null || true)
+  [[ -z "$artist$title" ]] && die "no track metadata"
+  _download "$artist" "$title" "$uri" "$album" "$track_num"
+}
+
+# ─── status ──────────────────────────────────────────────────────────────────
+
+cmd_status() {
+  _init_state
+  local saved failed total disk_used
+  saved=$(awk -F'\t' '$5=="ok"{c++} END{print c+0}' "$HISTORY_FILE")
+  failed=$(awk -F'\t' '$5=="failed"{c++} END{print c+0}' "$HISTORY_FILE")
+  total=$(wc -l < "$HISTORY_FILE")
+  disk_used=$(du -sh "$MUSIC_DIR" 2>/dev/null | cut -f1)
+
+  echo "played v$PLAYED_VERSION"
+  echo
+  echo "config:"
+  echo "  music dir:  $MUSIC_DIR"
+  echo "  threshold:  ${THRESHOLD}%"
+  echo "  format:     $AUDIO_FORMAT @ $AUDIO_QUALITY"
+  echo "  players:    $PLAYERS"
+  echo
+  echo "library:"
+  echo "  saved:      $saved"
+  echo "  failed:     $failed"
+  echo "  total log:  $total"
+  echo "  disk used:  ${disk_used:-?}"
+  echo
+
+  local player
+  if player=$(_get_player); then
+    local artist title length pos status pct=0
+    artist=$(playerctl -p "$player" metadata xesam:artist 2>/dev/null || echo "?")
+    title=$(playerctl -p "$player" metadata xesam:title 2>/dev/null || echo "?")
+    length=$(playerctl -p "$player" metadata mpris:length 2>/dev/null || echo 0)
+    status=$(playerctl -p "$player" status 2>/dev/null || echo "?")
+    pos=$(playerctl -p "$player" position 2>/dev/null || echo 0)
+    pos=$(awk -v p="$pos" 'BEGIN{printf "%.0f", p*1000000}')
+    [[ "$length" -gt 0 ]] && pct=$((pos * 100 / length))
+    echo "now playing ($status via $player):"
+    echo "  $artist — $title  [${pct}%]"
+  else
+    echo "no MPRIS player active"
+  fi
+
+  echo
+  echo "recent:"
+  tail -5 "$HISTORY_FILE" 2>/dev/null | awk -F'\t' '{printf "  [%s] %s — %s (%s)\n", $5, $2, $3, $4}'
+}
+
+# ─── history ─────────────────────────────────────────────────────────────────
+
+cmd_history() {
+  _init_state
+  local sub="${1:-list}"
+  case "$sub" in
+    list)
+      awk -F'\t' '{printf "[%s] %s — %s\n", $5, $2, $3}' "$HISTORY_FILE" | tail -50
+      ;;
+    search)
+      shift
+      local q="${*:-}"
+      [[ -z "$q" ]] && die "usage: played history search <query>"
+      grep -iF "$q" "$HISTORY_FILE" | \
+        awk -F'\t' '{printf "[%s] %s — %s (%s)\n", $5, $2, $3, $4}'
+      ;;
+    count)
+      wc -l < "$HISTORY_FILE"
+      ;;
+    *) die "unknown: history $sub" ;;
+  esac
+}
+
+# ─── init ────────────────────────────────────────────────────────────────────
+
+cmd_init() {
+  _check_deps
+  mkdir -p "$(dirname "$CONFIG_FILE")"
+  if [[ -f "$CONFIG_FILE" ]]; then
+    echo "config already exists: $CONFIG_FILE"
+  else
+    cat > "$CONFIG_FILE" <<EOF
+# played config — sourced as bash
+MUSIC_DIR="\$HOME/Music"
+THRESHOLD=80
+MIN_DURATION_SEC=30
+MAX_DURATION_SEC=600
+AUDIO_FORMAT=opus
+AUDIO_QUALITY=128K
+POLL_INTERVAL=3
+PLAYERS="spotify spotifyd"
+# DRY_RUN=1
+EOF
+    echo "wrote $CONFIG_FILE"
+  fi
+  _init_state
+  echo "state dir: $STATE_DIR"
+  echo
+  echo "next steps:"
+  echo "  played watch                 # run in foreground"
+  echo "  systemctl --user enable --now played   # run as daemon"
+}
+
+# ─── config show ─────────────────────────────────────────────────────────────
+
+cmd_config() {
+  case "${1:-show}" in
+    show)
+      echo "config file: $CONFIG_FILE $([[ -f "$CONFIG_FILE" ]] || echo '(missing)')"
+      echo "MUSIC_DIR=$MUSIC_DIR"
+      echo "THRESHOLD=$THRESHOLD"
+      echo "MIN_DURATION_SEC=$MIN_DURATION_SEC"
+      echo "MAX_DURATION_SEC=$MAX_DURATION_SEC"
+      echo "AUDIO_FORMAT=$AUDIO_FORMAT"
+      echo "AUDIO_QUALITY=$AUDIO_QUALITY"
+      echo "POLL_INTERVAL=$POLL_INTERVAL"
+      echo "PLAYERS=$PLAYERS"
+      echo "DRY_RUN=$DRY_RUN"
+      echo "STATE_DIR=$STATE_DIR"
+      ;;
+    edit)
+      "${EDITOR:-vi}" "$CONFIG_FILE"
+      ;;
+    *) die "unknown: config ${1:-}" ;;
+  esac
+}
+
+# ─── help ────────────────────────────────────────────────────────────────────
+
+cmd_help() {
+  cat <<EOF
+played v$PLAYED_VERSION — auto-archive music you actually listen to
+
+usage: played <command> [args]
+
+  watch              run the daemon (default)
+  download           download the currently-playing track now
+  status             show daemon, library, and current-track state
+  history [list|search QUERY|count]
+  config [show|edit]
+  init               create config + state dirs, check deps
+  version
+  help
+
+env / config file: $CONFIG_FILE
+state dir:         $STATE_DIR
+music dir:         $MUSIC_DIR
+
+EOF
+}
+
+# ─── dispatch ────────────────────────────────────────────────────────────────
+
+main() {
+  case "${1:-watch}" in
+    watch|poll)  shift || true; _check_deps; watch_loop ;;
+    download|d)  shift || true; cmd_download ;;
+    status|s)    shift || true; cmd_status ;;
+    history|h)   shift || true; cmd_history "$@" ;;
+    config|c)    shift || true; cmd_config "$@" ;;
+    init)        shift || true; cmd_init ;;
+    version|-V|--version) echo "played v$PLAYED_VERSION" ;;
+    help|-h|--help) cmd_help ;;
+    *) cmd_help; exit 1 ;;
+  esac
+}
+
+main "$@"

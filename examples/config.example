@@ -1,0 +1,27 @@
+# played config — sourced as bash from ~/.config/played/config.sh
+# all keys are optional; defaults shown below.
+
+# where to save downloaded music
+MUSIC_DIR="$HOME/Music"
+
+# percent of track that must be played to trigger a download
+THRESHOLD=80
+
+# absolute play-time floor — kills 16-second-of-a-20-second-skit issue
+MIN_DURATION_SEC=30
+
+# maximum track length to download — kills DJ sets / continuous mixes
+MAX_DURATION_SEC=600
+
+# yt-dlp audio extraction settings
+AUDIO_FORMAT=opus
+AUDIO_QUALITY=128K
+
+# MPRIS poll interval (seconds). higher = lower CPU, more imprecise pct.
+POLL_INTERVAL=3
+
+# space-separated MPRIS player names, in priority order
+PLAYERS="spotify spotifyd"
+
+# uncomment to log decisions without downloading anything
+# DRY_RUN=1

@@ -1,0 +1,33 @@
+[Unit]
+Description=played — auto-archive music you actually listen to
+After=dbus.socket
+Wants=dbus.socket
+
+[Service]
+Type=simple
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
+ExecStart=%h/.local/bin/played watch
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=300
+StartLimitBurst=20
+
+# resource limits — tuned for low-RAM systems (e.g. 8GB SBCs)
+MemoryHigh=2G
+MemoryMax=4G
+CPUQuota=50%
+
+# hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/share/played %h/.local/state/played %h/Music
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=default.target
