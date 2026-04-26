@@ -1,7 +1,7 @@
 # Maintainer: heatsync <mellen@heatsync.org>
 pkgname=played-git
 _pkgname=played
-pkgver=0.1.0.r0.gHEAD
+pkgver=0.2.1.r0.gHEAD
 pkgrel=1
 pkgdesc="auto-archive music you actually listen to (>=80% played, MPRIS-driven)"
 arch=('any')
@@ -21,9 +21,8 @@ sha256sums=('SKIP')
 
 pkgver() {
   cd "$_pkgname"
-  printf "0.1.0.r%s.g%s" \
-    "$(git rev-list --count HEAD)" \
-    "$(git rev-parse --short HEAD)"
+  # use latest annotated tag → e.g. 0.2.1.r5.g1482fea (5 commits past v0.2.1)
+  git describe --long --tags 2>/dev/null | sed 's/^v//;s/\([^-]*-g\)/r\1/;s/-/./g'
 }
 
 package() {
