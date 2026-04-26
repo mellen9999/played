@@ -5,7 +5,7 @@ pkgver=0.1.0.r0.gHEAD
 pkgrel=1
 pkgdesc="auto-archive music you actually listen to (>=80% played, MPRIS-driven)"
 arch=('any')
-url="https://github.com/heatsync/played"
+url="https://github.com/mellen9999/played"
 license=('MIT')
 depends=('bash' 'playerctl' 'yt-dlp' 'ffmpeg' 'util-linux')
 makedepends=('git')

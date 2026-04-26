@@ -1,5 +1,7 @@
 # played
 
+[![lint](https://github.com/mellen9999/played/actions/workflows/lint.yml/badge.svg)](https://github.com/mellen9999/played/actions/workflows/lint.yml)
+
 auto-archive music you actually listen to.
 
 `played` watches any [MPRIS](https://specifications.freedesktop.org/mpris-spec/2.2/)-compatible music player (Spotify, mpd, VLC, Mopidy, GNOME Music, …) and downloads tracks you played past a threshold (default 80%) as tagged opus files. It's a personal listening-history archiver, not a bulk ripper — only what *you* heard, only after *you* heard most of it.
@@ -39,7 +41,7 @@ systemctl --user enable --now played
 ### manual
 
 ```sh
-git clone https://github.com/heatsync/played
+git clone https://github.com/mellen9999/played
 cd played
 make user-install
 played init

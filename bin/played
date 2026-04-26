@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # played — auto-archive music you actually listen to (>=80% played)
-# https://github.com/heatsync/played
+# https://github.com/mellen9999/played
 set -uo pipefail
 
 PLAYED_VERSION="0.1.0"
