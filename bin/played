@@ -158,7 +158,10 @@ _history_append() {
   local line
   line=$(printf '%s\t%s\t%s\t%s\t%s' \
     "${uri:-unknown}" "$artist" "$title" "$(date -u +%FT%TZ)" "$status")
-  flock "$LOCK_FILE" -c "printf '%s\n' \"\$0\" >> \"\$1\"" "$line" "$HISTORY_FILE"
+  (
+    flock -x 9
+    printf '%s\n' "$line" >> "$HISTORY_FILE"
+  ) 9>"$LOCK_FILE"
 }
 
 # target opus path for a given artist/title (used for file-existence dedupe)
@@ -236,16 +239,17 @@ _download() {
   fi
 }
 
-# override yt-dlp's youtube-derived tags with MPRIS canonical metadata
+# override yt-dlp's youtube-derived tags with MPRIS canonical metadata.
+# opus tags live at stream level (vorbis comments), not format level.
 _retag() {
   local file="$1" artist="$2" title="$3" album="$4" track_num="$5" uri="$6"
   local tmp="${file%.*}.retag.${file##*.}"
-  local args=(-i "$file" -c copy -map_metadata -1
-              -metadata "artist=$artist"
-              -metadata "title=$(_clean_title "$title")")
-  [[ -n "$album" ]] && args+=(-metadata "album=$album")
-  [[ -n "$track_num" ]] && args+=(-metadata "track=$track_num")
-  [[ -n "$uri" && "$uri" != "unknown" ]] && args+=(-metadata "comment=$uri")
+  local args=(-i "$file" -c copy
+              -metadata:s:a:0 "artist=$artist"
+              -metadata:s:a:0 "title=$(_clean_title "$title")")
+  [[ -n "$album" ]] && args+=(-metadata:s:a:0 "album=$album")
+  [[ -n "$track_num" ]] && args+=(-metadata:s:a:0 "track=$track_num")
+  [[ -n "$uri" && "$uri" != "unknown" ]] && args+=(-metadata:s:a:0 "comment=$uri")
   if ffmpeg -y "${args[@]}" "$tmp" >/dev/null 2>&1; then
     mv "$tmp" "$file"
   else
