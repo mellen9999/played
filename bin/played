@@ -243,22 +243,50 @@ _quality_yt_args() {
   esac
 }
 
-# returns 0 if downloaded file's duration is within tolerance, else 1
-_verify_duration() {
+# returns 0 if the saved file is complete and playable, else 1.
+#
+# a partial yt-dlp grab still exits 0 and still plays — it just stops early —
+# so the only thing that catches it is the length. every branch here rejects on
+# doubt: a file we cannot measure is worse than one we can, not better.
+_verify_audio() {
   local file="$1" target_sec="$2"
-  local actual
+  local size actual
+
+  size=$(stat -c%s -- "$file" 2>/dev/null || echo 0)
+  if (( size < 10000 )); then
+    log "    reject: file too small (${size}B)"
+    return 1
+  fi
+
   actual=$(ffprobe -v error -show_entries format=duration \
     -of default=nw=1:nk=1 "$file" 2>/dev/null | awk 'NR==1{printf "%.0f",$1}')
   if [[ -z "$actual" || "$actual" -le 0 ]]; then
-    log "    duration: ffprobe failed; skipping check"
-    return 0
-  fi
-  local diff=$((actual - target_sec))
-  [[ "$diff" -lt 0 ]] && diff=$((-diff))
-  if (( diff > DURATION_TOLERANCE_SEC )); then
-    log "    reject: duration ${actual}s vs ${target_sec}s (Δ${diff}s > ${DURATION_TOLERANCE_SEC}s)"
+    log "    reject: unreadable duration (ffprobe failed)"
     return 1
   fi
+
+  if [[ "$target_sec" -gt 0 ]]; then
+    local diff=$((actual - target_sec))
+    [[ "$diff" -lt 0 ]] && diff=$((-diff))
+    if (( diff > DURATION_TOLERANCE_SEC )); then
+      log "    reject: duration ${actual}s vs ${target_sec}s (Δ${diff}s > ${DURATION_TOLERANCE_SEC}s)"
+      return 1
+    fi
+  else
+    log "    warn: no reference length, duration unverified (${actual}s)"
+  fi
+
+  # correct length still permits a mangled middle; decoding is what proves it
+  local decode_err
+  decode_err=$(ffmpeg -v error -i "$file" -f null - 2>&1) || {
+    log "    reject: decode failed"
+    return 1
+  }
+  if [[ -n "$decode_err" ]]; then
+    log "    reject: corrupt stream (${decode_err%%$'\n'*})"
+    return 1
+  fi
+
   return 0
 }
 
@@ -266,7 +294,7 @@ _verify_duration() {
 # saved file via stdout. returns nonzero on any failure (caller deletes nothing
 # extra; this fn cleans up its own partials on failure).
 _try_candidate() {
-  local vid="$1" target_base="$2" length_sec="$3"
+  local vid="$1" target_base="$2" length_sec="$3" cand_sec="${4:-0}"
   local out_template="${target_base}.%(ext)s"
   local url="https://www.youtube.com/watch?v=$vid"
   local rc=0
@@ -292,11 +320,14 @@ _try_candidate() {
     return 1
   fi
 
-  if [[ "$length_sec" -gt 0 ]]; then
-    if ! _verify_duration "$found" "$length_sec"; then
-      rm -f "$found"
-      return 1
-    fi
+  # prefer the player's length; fall back to what YouTube reported for this
+  # candidate, so a track with no MPRIS length is still checked against something
+  local target_sec="$length_sec"
+  [[ "$target_sec" -gt 0 ]] || target_sec="$cand_sec"
+
+  if ! _verify_audio "$found" "$target_sec"; then
+    rm -f "$found"
+    return 1
   fi
 
   printf '%s' "$found"
@@ -371,7 +402,7 @@ _download() {
     [[ "$tried" -ge "$MAX_CANDIDATES" ]] && break
     ((tried++))
     log "  attempt $tried: $vid (score $score, ${dur}s, $up)"
-    if saved_path=$(_try_candidate "$vid" "$target_base" "$length_sec"); then
+    if saved_path=$(_try_candidate "$vid" "$target_base" "$length_sec" "$dur"); then
       picked_id="$vid"
       picked_score="$score"
       break

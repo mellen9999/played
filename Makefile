@@ -47,3 +47,4 @@ test:
 	bash tests/test-sanitize.sh
 	bash tests/test-match.sh
 	bash tests/test-exists-check.sh
+	bash tests/test-verify.sh
