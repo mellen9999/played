@@ -276,12 +276,17 @@ _verify_audio() {
     log "    warn: no reference length, duration unverified (${actual}s)"
   fi
 
-  # correct length still permits a mangled middle; decoding is what proves it
-  local decode_err
-  decode_err=$(ffmpeg -v error -i "$file" -f null - 2>&1) || {
+  # correct length still permits a mangled middle; decoding is what proves it.
+  # the null muxer also grumbles about equal timestamps on perfectly good ogg
+  # files — that is a muxing complaint, not a decode failure, so drop those
+  # lines or healthy tracks get rejected and re-fetched forever.
+  local decode_err status=0
+  decode_err=$(ffmpeg -v error -i "$file" -f null - 2>&1) || status=$?
+  decode_err=$(grep -v 'non monotonically increasing dts' <<<"$decode_err")
+  if (( status != 0 )); then
     log "    reject: decode failed"
     return 1
-  }
+  fi
   if [[ -n "$decode_err" ]]; then
     log "    reject: corrupt stream (${decode_err%%$'\n'*})"
     return 1

@@ -62,4 +62,22 @@ assert_verify reject "truncated to a stub"                "$TMP/tiny.opus" 120
 
 assert_verify reject "missing file"                       "$TMP/nope.opus" 120
 
+# some ogg files carry packets with equal timestamps — 66 of them in one real
+# library track — and the null muxer complains about every one while the audio
+# decodes in full. treating that as corruption sends played back to youtube for
+# a track it already has, forever. stub ffmpeg to make the distinction exactly.
+stub_ffmpeg() {
+  mkdir -p "$TMP/bin"
+  { echo '#!/usr/bin/env bash'; printf 'printf %%s\\\\n "%s" >&2\nexit 0\n' "$1"; } > "$TMP/bin/ffmpeg"
+  chmod +x "$TMP/bin/ffmpeg"
+}
+
+PATH="$TMP/bin:$PATH"
+stub_ffmpeg "[null @ 0x1] Application provided invalid, non monotonically increasing dts to muxer in stream 0: 100 >= 100"
+assert_verify accept "muxer timestamp grumble is not corruption" "$TMP/full.opus" 120
+
+stub_ffmpeg "[opus @ 0x1] Error decoding Opus frame: corrupted stream"
+assert_verify reject "a real decode error still rejects"          "$TMP/full.opus" 120
+rm -rf "$TMP/bin"
+
 echo "all verify tests passed"
