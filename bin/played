@@ -159,15 +159,55 @@ _init_state() {
 
 # ─── history / dedupe ────────────────────────────────────────────────────────
 
+# ─── identity ────────────────────────────────────────────────────────────────
+
+# one rule for "is this the same song": lowercase, drop the release noise a
+# service bolts onto a title (official, lyrics, remastered 2009, [HD] ...), then
+# keep letters and digits only. history dedupe and the on-disk check both use
+# it, so "Crawling", "Crawling (Remastered)" and "crawling_-_2009_remaster.opus"
+# agree. live / remix / acoustic are kept: those are different recordings.
+# awk, so a thousand history rows cost one process.
+_KEY_AWK='
+function key(s) {
+  s = " " tolower(s) " "; gsub(/_/, " ", s)
+  gsub(/ - topic $/, " ", s)
+  gsub(/#[a-z0-9]+/, " ", s)
+  gsub(/ *- *(19|20)[0-9][0-9] remaster(ed)?( version)?/, " ", s)
+  gsub(/[[(](19|20)[0-9][0-9] remaster(ed)?( version)?[])]/, " ", s)
+  # release noise, word-bounded. separators are doubled first so that two
+  # adjacent noise words each keep a boundary of their own to match on.
+  gsub(/[^a-z0-9]/, "&&", s)
+  gsub(/[^a-z0-9](official|audio|lyrics?|lyric[^a-z0-9]+video|visuali[sz]er|hq|hd|video|music[^a-z0-9]+video|explicit|clean|remaster(ed)?([^a-z0-9]+version|[^a-z0-9]+(19|20)[0-9][0-9])?)[^a-z0-9]/, " ", s)
+  gsub(/[^a-z0-9]/, "", s)
+  return s
+}'
+
 _history_has() {
   local uri="$1" artist="$2" title="$3"
   if [[ -n "$uri" && "$uri" != "unknown" ]]; then
-    awk -F'\t' -v u="$uri" '$1==u {found=1; exit} END{exit !found}' "$HISTORY_FILE"
-    return $?
+    awk -F'\t' -v u="$uri" '$1==u {found=1; exit} END{exit !found}' "$HISTORY_FILE" && return 0
   fi
-  awk -F'\t' -v a="$artist" -v t="$title" \
-    'tolower($2)==tolower(a) && tolower($3)==tolower(t) {found=1; exit} END{exit !found}' \
-    "$HISTORY_FILE"
+  awk -F'\t' -v a="$artist" -v t="$title" "$_KEY_AWK"'
+    BEGIN { ka = key(a); kt = key(t) }
+    key($2)==ka && key($3)==kt { found=1; exit }
+    END { exit !found }' "$HISTORY_FILE"
+}
+
+# a file already in the artist folder that is this song under any spelling:
+# played's own lowercase name, a mixed-case copy, or a legacy "artist - title
+# (official audio).opus" — that prefix is only dropped when it names this artist.
+# prints the path of the first match.
+_existing_file() {
+  local dir="$1" artist="$2" title="$3"
+  [[ -d "$dir" ]] || return 0
+  find "$dir" -maxdepth 1 -type f ! -name '.*' -printf '%f\n' 2>/dev/null |
+  awk -v a="$artist" -v t="$title" -v d="$dir" "$_KEY_AWK"'
+    BEGIN { ka = key(a); kt = key(t) }
+    { n = $0; sub(/\.[^.]+$/, "", n)
+      if (key(n) == kt) { print d "/" $0; exit }
+      if (match(n, / - |_-_/)) {
+        p = substr(n, 1, RSTART - 1); m = substr(n, RSTART + RLENGTH)
+        if (index(key(p), ka) && key(m) == kt) { print d "/" $0; exit } } }'
 }
 
 _history_append() {
@@ -359,10 +399,8 @@ _download() {
   if _history_has "$uri" "$artist" "$title"; then
     log "skip (history): $search"; return 0
   fi
-  # case-insensitive existence check — played writes lowercase paths, but
-  # any pre-existing mixed-case copy on disk should be treated as the same file.
   local existing_file
-  existing_file=$(find "$target_dir" -maxdepth 1 -type f -iname "$(basename "$target")" -print -quit 2>/dev/null)
+  existing_file=$(_existing_file "$target_dir" "$artist" "$title")
   if [[ -n "$existing_file" ]]; then
     log "skip (file exists): $existing_file"
     _history_append "$uri" "$artist" "$title" "exists"

@@ -247,6 +247,11 @@ spotify_uri	artist	title	timestamp	status	source	score	bitrate
 
 `status` is one of: `ok`, `rejected` (no candidate met the bar), `no-candidates`, `failed`, `exists`, `diskfull`.
 
+Dedupe compares songs, not strings: artist and title are lowercased and stripped of release
+noise (`(Official Audio)`, `[HD]`, `- 2009 Remaster`, `(Lyrics)` ...) before matching, both
+against history and against the files already in the artist's folder, whatever they are named.
+Live, remix, acoustic and extended versions stay distinct.
+
 Logs: `~/.local/state/played/played.log`.
 
 ## what's filtered out
