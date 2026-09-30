@@ -1,0 +1,11 @@
+[Unit]
+Description=played — run when the wanted list changes
+Documentation=https://github.com/mellen9999/played
+
+[Path]
+# syncthing writes the file in place; a phone appends, so every arrival is a change.
+# if MUSIC_DIR moved, override with a drop-in: PathChanged= (blank) then the new path.
+PathChanged=%h/Music/.wanted
+
+[Install]
+WantedBy=default.target

@@ -43,6 +43,8 @@ HISTORY_FILE="$STATE_DIR/history.tsv"
 LOG_FILE="$STATE_DIR/played.log"
 LOCK_FILE="$STATE_DIR/history.lock"
 DOWNLOAD_LOCK="$STATE_DIR/download.lock"
+WANTED_FILE="$MUSIC_DIR/.wanted"        # appended by phones (titan-hooks), never edited here
+WANTED_SEEN="$STATE_DIR/wanted.seen"
 
 # ─── lib helpers (Python) ────────────────────────────────────────────────────
 
@@ -602,6 +604,38 @@ cmd_download() {
   _download "$artist" "$title" "$uri" "$album" "$track_num" "$length"
 }
 
+# ─── wanted list (tracks heard on another device) ────────────────────────────
+
+# a phone cannot run yt-dlp sanely, so it appends what it actually heard to
+# MUSIC_DIR/.wanted (one tab-separated line: utc-time, source, artist, title,
+# album, duration-ms) and syncthing brings the file here. this side only reads
+# it; each line is settled once, tracked by a hash so the file stays append-only
+# on both ends and never conflicts.
+cmd_wanted() {
+  _init_state
+  _check_deps
+  [[ -r "$WANTED_FILE" ]] || return 0
+  touch "$WANTED_SEEN"
+  local ts src artist title album dur_ms line h length_us n=0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -z "$line" ]] && continue
+    h=$(printf '%s' "$line" | sha256sum | cut -c1-16)
+    grep -qxF "$h" "$WANTED_SEEN" && continue
+    IFS=$'\t' read -r ts src artist title album dur_ms <<< "$line"
+    length_us=$(( ${dur_ms:-0} * 1000 ))
+    if _track_eligible "" "$artist" "$title" "$length_us"; then
+      log "wanted (${src:-?}): $artist — $title"
+      _download "$artist" "$title" "" "$album" "" "$length_us" || true
+    else
+      log "wanted (filtered): $artist — $title"
+    fi
+    printf '%s\n' "$h" >> "$WANTED_SEEN"
+    ((n++))
+  done < "$WANTED_FILE"
+  (( n )) && log "wanted: settled $n"
+  return 0
+}
+
 # ─── status ──────────────────────────────────────────────────────────────────
 
 cmd_status() {
@@ -748,6 +782,7 @@ usage: played <command> [args]
 
   watch              run the daemon (default)
   download (d)       download the currently-playing track now
+  wanted (w)         fetch tracks another device heard (MUSIC_DIR/.wanted)
   status (s)         show daemon, library, and current-track state
   history (h) [list|search QUERY|count]
   config (c) [show|edit]
@@ -768,6 +803,7 @@ main() {
   case "${1:-watch}" in
     watch|poll)  shift || true; _check_deps; watch_loop ;;
     download|d)  shift || true; cmd_download ;;
+    wanted|w)    shift || true; cmd_wanted ;;
     status|s)    shift || true; cmd_status ;;
     history|h)   shift || true; cmd_history "$@" ;;
     config|c)    shift || true; cmd_config "$@" ;;

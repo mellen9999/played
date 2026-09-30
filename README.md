@@ -153,6 +153,40 @@ systemctl --user daemon-reload
 systemctl --user restart played
 ```
 
+### from your phone
+
+A phone cannot run this daemon, but it can say what it heard. Anything that appends a
+line to `MUSIC_DIR/.wanted` gets fetched here, with the same search, scoring and
+verification as a local listen:
+
+```
+2026-09-29T02:41:07Z	youtube-music	Duran Duran	Ordinary World	Duran Duran	340241
+```
+
+utc time, source, artist, title, album, duration in ms — tab separated. Share the music
+folder with syncthing, let the phone append, and enable the watcher:
+
+```sh
+systemctl --user enable --now played-wanted.path played-wanted.timer
+```
+
+`played` never edits `.wanted`; each line is settled once (tracked in the state dir), so
+the file stays append-only on both ends and never conflicts. Downloads land in the same
+folder and sync back to the phone. If `MUSIC_DIR` isn't `~/Music`, give
+`played-wanted.service` the same drop-in as above and point the path unit at it:
+
+```sh
+mkdir -p ~/.config/systemd/user/played-wanted.path.d
+cat > ~/.config/systemd/user/played-wanted.path.d/music-dir.conf <<END
+[Path]
+PathChanged=
+PathChanged=$HOME/your/music/path/.wanted
+END
+```
+
+A ready-made phone side for the Unihertz Titan 2 lives in
+[titan-hooks](https://github.com/mellen9999/titan-hooks).
+
 ## quality
 
 | `QUALITY=` | what you get |
@@ -185,6 +219,7 @@ Tune `SCORE_THRESHOLD` to taste: 60 is permissive (more saves, more wrong matche
 |---|---|
 | `played watch` | run the daemon (default; usually invoked via systemd) |
 | `played download` | force-download the currently playing track |
+| `played wanted` | fetch tracks another device heard (see [from your phone](#from-your-phone)) |
 | `played status` | daemon state, library count, current track |
 | `played history` | list everything `played` has saved or skipped |
 | `played history search QUERY` | search history by artist or title |

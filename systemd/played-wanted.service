@@ -1,0 +1,21 @@
+[Unit]
+Description=played — fetch tracks heard on another device
+Documentation=https://github.com/mellen9999/played
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin
+ExecStart=/usr/bin/env played wanted
+MemoryHigh=2G
+MemoryMax=4G
+CPUQuota=50%
+
+# same sandbox as played.service; add the same music-dir drop-in if MUSIC_DIR moved
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=-%h/.local/state/played -%h/.cache/played -%h/Music
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true

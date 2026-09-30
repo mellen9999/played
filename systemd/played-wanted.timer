@@ -1,0 +1,11 @@
+[Unit]
+Description=played — catch up on the wanted list after boot and on a slow tick
+Documentation=https://github.com/mellen9999/played
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=6h
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target

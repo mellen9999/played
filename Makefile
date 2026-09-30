@@ -17,6 +17,9 @@ install:
 	install -Dm755 lib/played-match       $(DESTDIR)$(LIBDIR)/played-match
 	install -Dm755 lib/played-cover       $(DESTDIR)$(LIBDIR)/played-cover
 	install -Dm644 systemd/played.service $(DESTDIR)$(UNITDIR)/played.service
+	install -Dm644 systemd/played-wanted.service $(DESTDIR)$(UNITDIR)/played-wanted.service
+	install -Dm644 systemd/played-wanted.path    $(DESTDIR)$(UNITDIR)/played-wanted.path
+	install -Dm644 systemd/played-wanted.timer   $(DESTDIR)$(UNITDIR)/played-wanted.timer
 	install -Dm644 README.md              $(DESTDIR)$(DOCDIR)/README.md
 	install -Dm644 LICENSE                $(DESTDIR)$(DOCDIR)/LICENSE
 	install -Dm644 examples/config.example $(DESTDIR)$(DOCDIR)/config.example
@@ -32,6 +35,9 @@ user-install:
 	install -Dm755 lib/played-match       $(HOME)/.local/lib/played/played-match
 	install -Dm755 lib/played-cover       $(HOME)/.local/lib/played/played-cover
 	install -Dm644 systemd/played.service $(HOME)/.config/systemd/user/played.service
+	install -Dm644 systemd/played-wanted.service $(HOME)/.config/systemd/user/played-wanted.service
+	install -Dm644 systemd/played-wanted.path    $(HOME)/.config/systemd/user/played-wanted.path
+	install -Dm644 systemd/played-wanted.timer   $(HOME)/.config/systemd/user/played-wanted.timer
 	@echo "installed. enable with:  systemctl --user enable --now played"
 
 user-uninstall:
