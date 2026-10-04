@@ -56,4 +56,12 @@ assert_eq "$(_clean_title "Hot Blooded (Lyric Video)")"    "Hot Blooded" "lyric 
 assert_eq "$(_clean_title "Track [PREMIERE]")"             "Track"       "premiere"
 assert_eq "$(_clean_title "Track #edm #house")"            "Track"       "hashtags"
 
+assert_eq "$(_clean_title "Holding Back the Years (Extended Single Mix) [2008 Remaster] (Extended Single Mix; 2008 Remaster)")" \
+  "Holding Back the Years (Extended Single Mix)" "remaster + repeated group"
+assert_eq "$(_clean_title "Crawling - 2009 Remaster")"       "Crawling"    "dash remaster"
+assert_eq "$(_clean_title "Dreams (Remastered 2011)")"       "Dreams"      "remastered group"
+assert_eq "$(_clean_title "Song (Live) (Live)")"             "Song (Live)" "dup group"
+assert_eq "$(_clean_title "Song (Live) (Acoustic)")"         "Song (Live) (Acoustic)" "distinct groups kept"
+assert_eq "$(_clean_title "Sadeness (Part I / Extended Trance Mix)")" "Sadeness (Part I / Extended Trance Mix)" "version kept"
+
 echo "all tests passed"
