@@ -64,4 +64,7 @@ assert_eq "$(_clean_title "Song (Live) (Live)")"             "Song (Live)" "dup 
 assert_eq "$(_clean_title "Song (Live) (Acoustic)")"         "Song (Live) (Acoustic)" "distinct groups kept"
 assert_eq "$(_clean_title "Sadeness (Part I / Extended Trance Mix)")" "Sadeness (Part I / Extended Trance Mix)" "version kept"
 
+assert_eq "$(_clean_title "Crazy [4K Remaster]")"            "Crazy"       "4k remaster"
+assert_eq "$(_clean_title "Boogie (Single Version 2 Remastered 1999)")" "Boogie (Single Version 2)" "remaster inside version"
+assert_eq "$(_clean_title "Freedom! '90 (Remastered)")"      "Freedom! '90" "bare remastered"
 echo "all tests passed"
