@@ -67,4 +67,5 @@ assert_eq "$(_clean_title "Sadeness (Part I / Extended Trance Mix)")" "Sadeness 
 assert_eq "$(_clean_title "Crazy [4K Remaster]")"            "Crazy"       "4k remaster"
 assert_eq "$(_clean_title "Boogie (Single Version 2 Remastered 1999)")" "Boogie (Single Version 2)" "remaster inside version"
 assert_eq "$(_clean_title "Freedom! '90 (Remastered)")"      "Freedom! '90" "bare remastered"
+assert_eq "$(_clean_title "Boogie (Single Version 2 / Remastered 1999)")" "Boogie (Single Version 2)" "slash before remaster"
 echo "all tests passed"
