@@ -122,6 +122,19 @@ _safe_component() {
   printf '%s' "$s"
 }
 
+# a browser reports the YouTube CHANNEL as the artist and the whole video title
+# as the title. a VEVO or "- Topic" channel names a label, not the artist — but
+# its titles read "Artist - Song", so take the artist from there. any other
+# channel is left alone: "Song - Remastered" must not be split.
+_split_channel() {
+  local a="$1" t="$2"
+  if [[ "$a" =~ ([Vv][Ee][Vv][Oo]|[[:space:]]-[[:space:]]Topic)$ && "$t" == *" - "* ]]; then
+    a="${t%% - *}"
+    t="${t#* - }"
+  fi
+  printf '%s\t%s' "$a" "$t"
+}
+
 # title cleanup for filenames + search (drops noise, keeps the song name)
 _clean_title() {
   local t="$1"
@@ -576,6 +589,7 @@ watch_loop() {
     uri=$(playerctl -p "$player" metadata xesam:url 2>/dev/null || true)
     artist=$(playerctl -p "$player" metadata xesam:artist 2>/dev/null || true)
     title=$(playerctl -p "$player" metadata xesam:title 2>/dev/null || true)
+    IFS=$'\t' read -r artist title < <(_split_channel "$artist" "$title")
     length=$(playerctl -p "$player" metadata mpris:length 2>/dev/null || echo 0)
     album=$(playerctl -p "$player" metadata xesam:album 2>/dev/null || true)
     track_num=$(playerctl -p "$player" metadata xesam:trackNumber 2>/dev/null || true)
@@ -641,6 +655,7 @@ cmd_download() {
   uri=$(playerctl -p "$player" metadata xesam:url 2>/dev/null || true)
   artist=$(playerctl -p "$player" metadata xesam:artist 2>/dev/null || true)
   title=$(playerctl -p "$player" metadata xesam:title 2>/dev/null || true)
+  IFS=$'\t' read -r artist title < <(_split_channel "$artist" "$title")
   album=$(playerctl -p "$player" metadata xesam:album 2>/dev/null || true)
   track_num=$(playerctl -p "$player" metadata xesam:trackNumber 2>/dev/null || true)
   length=$(playerctl -p "$player" metadata mpris:length 2>/dev/null || echo 0)

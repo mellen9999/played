@@ -26,6 +26,7 @@ extract_fn() {
 
 eval "$(extract_fn _safe_component)"
 eval "$(extract_fn _clean_title)"
+eval "$(extract_fn _split_channel)"
 
 assert_eq() {
   local got="$1" want="$2" msg="$3"
@@ -68,4 +69,9 @@ assert_eq "$(_clean_title "Crazy [4K Remaster]")"            "Crazy"       "4k r
 assert_eq "$(_clean_title "Boogie (Single Version 2 Remastered 1999)")" "Boogie (Single Version 2)" "remaster inside version"
 assert_eq "$(_clean_title "Freedom! '90 (Remastered)")"      "Freedom! '90" "bare remastered"
 assert_eq "$(_clean_title "Boogie (Single Version 2 / Remastered 1999)")" "Boogie (Single Version 2)" "slash before remaster"
+echo "_split_channel:"
+assert_eq "$(_split_channel "EagleEyeCherryVEVO" "Eagle-Eye Cherry - Save Tonight")" $'Eagle-Eye Cherry\tSave Tonight' "vevo splits"
+assert_eq "$(_split_channel "Cher - Topic" "Cher - Believe")" $'Cher\tBelieve' "topic splits"
+assert_eq "$(_split_channel "Cher - Topic" "Believe")" $'Cher - Topic\tBelieve' "topic without prefix kept"
+assert_eq "$(_split_channel "Runningdap" "Learn 2 Play - Lyrics")" $'Runningdap\tLearn 2 Play - Lyrics' "plain channel untouched"
 echo "all tests passed"
