@@ -30,10 +30,13 @@ ProtectHome=read-only
 # at ~/.config/systemd/user/played.service.d/music-dir.conf with:
 #   [Service]
 #   ReadWritePaths=/your/custom/path
-# `-` prefix: don't fail namespace setup if a path is absent (e.g. on first
-# launch before played has created its state/cache dirs, or when MUSIC_DIR
+# `-` prefix: don't fail namespace setup if ~/Music is absent (MUSIC_DIR
 # differs from the default and is granted via a drop-in instead).
-ReadWritePaths=-%h/.local/state/played -%h/.cache/played -%h/Music
+# systemd creates these (~/.local/state/played, ~/.cache/played) before the sandbox
+# starts and keeps them writable; needs systemd >= 254 for user units.
+StateDirectory=played
+CacheDirectory=played
+ReadWritePaths=-%h/Music
 PrivateTmp=true
 ProtectKernelTunables=true
 ProtectKernelModules=true

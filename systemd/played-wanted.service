@@ -14,7 +14,11 @@ CPUQuota=50%
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=-%h/.local/state/played -%h/.cache/played -%h/Music
+# systemd creates these (~/.local/state/played, ~/.cache/played) before the sandbox
+# starts and keeps them writable; needs systemd >= 254 for user units.
+StateDirectory=played
+CacheDirectory=played
+ReadWritePaths=-%h/Music
 PrivateTmp=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
