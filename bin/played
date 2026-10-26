@@ -13,6 +13,9 @@ XDG_STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
 XDG_CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}"
 XDG_MUSIC_DIR="${XDG_MUSIC_DIR:-$HOME/Music}"
 
+# yt-dlp's own cache must live under a dir the sandbox leaves writable
+YTDLP_CACHE="$XDG_CACHE_HOME/played/yt-dlp"
+
 CONFIG_FILE="${PLAYED_CONFIG:-$XDG_CONFIG_HOME/played/config.sh}"
 
 # defaults — overridable in config
@@ -265,7 +268,7 @@ _search_and_score() {
   local artist="$1" title="$2" length_sec="$3"
   local query="$artist $title"
   local json
-  json=$(yt-dlp --dump-json --flat-playlist --no-warnings --quiet \
+  json=$(yt-dlp --cache-dir "$YTDLP_CACHE" --dump-json --flat-playlist --no-warnings --quiet \
     "ytsearch${SEARCH_LIMIT}:$query" 2>/dev/null)
   [[ -z "$json" ]] && return 1
 
@@ -369,7 +372,7 @@ _try_candidate() {
 
   local args
   mapfile -t args < <(_quality_yt_args)
-  yt-dlp "${args[@]}" --output "$out_template" "$url" 2>>"$LOG_FILE" || rc=$?
+  yt-dlp --cache-dir "$YTDLP_CACHE" "${args[@]}" --output "$out_template" "$url" 2>>"$LOG_FILE" || rc=$?
   if (( rc != 0 )); then
     rm -f "${target_base}".*part 2>/dev/null || true
     return 1
