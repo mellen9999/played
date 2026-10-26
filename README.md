@@ -130,6 +130,8 @@ MAX_DURATION_SEC=600             # skip DJ sets, mixes (10 min)
 QUALITY=opus                     # best | opus | opus-compact
 SCORE_THRESHOLD=70               # 0-100; how confident the YT match must be
 DURATION_TOLERANCE_SEC=5         # reject downloads >5s off Spotify length
+DURATION_TOLERANCE_WIDE_SEC=15    # ...but allow this much when the match score is >= WIDE_MIN_SCORE
+WIDE_MIN_SCORE=65
 SEARCH_LIMIT=10                  # YT search candidates per track
 EMBED_COVER=1                    # 1 to embed cover art, 0 to skip
 POLL_INTERVAL=3                  # MPRIS poll seconds

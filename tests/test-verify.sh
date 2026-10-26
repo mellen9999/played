@@ -37,6 +37,8 @@ tone 120 "$TMP/full.opus"
 assert_verify accept "full track, matching length"        "$TMP/full.opus" 120
 assert_verify accept "full track, within tolerance"       "$TMP/full.opus" 124
 assert_verify accept "no reference length, file is sound"  "$TMP/full.opus" 0
+assert_verify reject "9s off, default tolerance"          "$TMP/full.opus" 129
+_verify_audio "$TMP/full.opus" 129 15 >/dev/null 2>&1 && echo "  ok   9s off, wide tolerance" || { echo "  FAIL wide tolerance"; exit 1; }
 
 assert_verify reject "full track, outside tolerance"      "$TMP/full.opus" 140
 

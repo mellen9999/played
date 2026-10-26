@@ -27,6 +27,8 @@ SCORE_THRESHOLD=70
 # downloaded file's duration must be within ±this many seconds of the
 # Spotify track length. catches "extended mix" false matches.
 DURATION_TOLERANCE_SEC=5
+DURATION_TOLERANCE_WIDE_SEC=15   # allowed instead when the match score is >= WIDE_MIN_SCORE
+WIDE_MIN_SCORE=65
 
 # how many YouTube candidates to fetch per search; how many of the top picks
 # to actually try downloading before giving up.
