@@ -124,7 +124,7 @@ Your music dir is left alone.
 
 ```sh
 MUSIC_DIR="$HOME/Music"          # where downloads go
-THRESHOLD=80                     # percent of track played before saving
+THRESHOLD=80                     # percent of the track you actually listened to (time, not position) before saving
 MIN_DURATION_SEC=30              # skip intros, skits, ads
 MAX_DURATION_SEC=600             # skip DJ sets, mixes (10 min)
 QUALITY=opus                     # best | opus | opus-compact
@@ -262,7 +262,7 @@ Skipped automatically:
 - podcasts (`spotify:episode:` URIs)
 - tracks shorter than `MIN_DURATION_SEC`
 - tracks longer than `MAX_DURATION_SEC`
-- anything you didn't play past `THRESHOLD`%
+- anything you didn't actually listen to for `THRESHOLD`% of its length (seeking or a dj skipping ahead doesn't count)
 
 ## troubleshooting
 

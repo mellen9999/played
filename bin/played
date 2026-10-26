@@ -572,7 +572,9 @@ watch_loop() {
 
   local current_uri="" current_artist="" current_title=""
   local current_length=0 current_album="" current_track_num=""
-  local max_pos=0
+  # real time spent listening to the current track, in µs. position can't be
+  # trusted: a dj starts songs mid-way and a seek jumps it
+  local heard=0 last_tick=${EPOCHREALTIME/[.,]/} now dt
 
   while true; do
     local player
@@ -580,15 +582,15 @@ watch_loop() {
       # player gone → flush last track
       if [[ -n "$current_uri" && "$current_length" -gt 0 ]]; then
         _maybe_download "$current_uri" "$current_artist" "$current_title" \
-                        "$max_pos" "$current_length" "$current_album" "$current_track_num"
+                        "$heard" "$current_length" "$current_album" "$current_track_num"
         current_uri=""
-        max_pos=0
+        heard=0
       fi
       sleep "$POLL_INTERVAL"
       continue
     fi
 
-    local uri artist title length album track_num status pos
+    local uri artist title length album track_num status
     uri=$(playerctl -p "$player" metadata xesam:url 2>/dev/null || true)
     artist=$(playerctl -p "$player" metadata xesam:artist 2>/dev/null || true)
     title=$(playerctl -p "$player" metadata xesam:title 2>/dev/null || true)
@@ -604,7 +606,7 @@ watch_loop() {
       # track changed → evaluate previous
       if [[ -n "$current_uri" && "$current_length" -gt 0 ]]; then
         _maybe_download "$current_uri" "$current_artist" "$current_title" \
-                        "$max_pos" "$current_length" "$current_album" "$current_track_num"
+                        "$heard" "$current_length" "$current_album" "$current_track_num"
       fi
       current_uri="$identity"
       current_artist="$artist"
@@ -612,7 +614,7 @@ watch_loop() {
       current_length="$length"
       current_album="$album"
       current_track_num="$track_num"
-      max_pos=0
+      heard=0
       if _track_eligible "$uri" "$artist" "$title" "$length"; then
         log "▶ $artist — $title"
       else
@@ -622,10 +624,13 @@ watch_loop() {
     fi
 
     status=$(playerctl -p "$player" status 2>/dev/null || true)
+    # cap each step so a suspend/resume can't count as listening
+    now=${EPOCHREALTIME/[.,]/}
+    dt=$((now - last_tick))
+    last_tick=$now
+    (( dt > POLL_INTERVAL * 3000000 )) && dt=$((POLL_INTERVAL * 3000000))
     if [[ "$status" == "Playing" && "$current_length" -gt 0 ]]; then
-      pos=$(playerctl -p "$player" position 2>/dev/null || echo 0)
-      pos=$(awk -v p="$pos" 'BEGIN{printf "%.0f", p*1000000}')
-      [[ "$pos" -gt "$max_pos" ]] && max_pos="$pos"
+      heard=$((heard + dt))
     fi
 
     sleep "$POLL_INTERVAL"
@@ -633,12 +638,12 @@ watch_loop() {
 }
 
 _maybe_download() {
-  local uri="$1" artist="$2" title="$3" max_pos="$4" length="$5"
+  local uri="$1" artist="$2" title="$3" heard="$4" length="$5"
   local album="$6" track_num="$7"
   [[ "$length" -le 0 ]] && return
-  local pct=$((max_pos * 100 / length))
+  local pct=$((heard * 100 / length))
   if (( pct >= THRESHOLD )); then
-    log "played ${pct}%: $artist — $title"
+    log "heard ${pct}%: $artist — $title"
     # spawn detached. _download takes DOWNLOAD_LOCK internally so
     # concurrent calls serialize without stalling the MPRIS poller.
     ( _download "$artist" "$title" "$uri" "$album" "$track_num" "$length" ) &
